@@ -28,6 +28,261 @@ use std::{
 };
 
 // ============================================================================
+// Kintone Configuration
+// ============================================================================
+
+#[derive(Debug, Clone)]
+struct KintoneConfig {
+    domain: String,
+    app_id: String,
+    api_token: String,
+}
+
+fn load_credentials_env() -> HashMap<String, String> {
+    let path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".credentials/common.env");
+    let mut map = HashMap::new();
+    if let Ok(content) = fs::read_to_string(&path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                map.insert(key.trim().to_string(), value.to_string());
+            }
+        }
+    }
+    map
+}
+
+fn load_kintone_config() -> Option<KintoneConfig> {
+    let env = load_credentials_env();
+    let domain = env.get("KINTONE_DOMAIN")?.clone();
+    let app_id = env.get("KINTONE_APP_ID_TASKS")?.clone();
+    let api_token = env.get("KINTONE_API_TOKEN")?.clone();
+    if domain.is_empty() || app_id.is_empty() || api_token.is_empty() {
+        return None;
+    }
+    Some(KintoneConfig {
+        domain,
+        app_id,
+        api_token,
+    })
+}
+
+// ============================================================================
+// Kintone API
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+struct KintoneRecordsResponse {
+    records: Vec<KintoneRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KintoneRecord {
+    #[serde(rename = "$id")]
+    id: KintoneFieldValue,
+    #[serde(rename = "タイトル")]
+    title: KintoneFieldValue,
+    status: KintoneFieldValue,
+    #[serde(rename = "優先度")]
+    priority: KintoneFieldValue,
+    #[serde(rename = "期限")]
+    deadline: KintoneFieldValue,
+    #[serde(rename = "作成日時")]
+    created_at: KintoneFieldValue,
+}
+
+#[derive(Debug, Deserialize)]
+struct KintoneFieldValue {
+    value: Option<String>,
+}
+
+fn fetch_kintone_tasks(config: &KintoneConfig) -> Vec<GlobalTask> {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let query = "status in (\"todo\", \"in_progress\") order by 作成日時 desc limit 20";
+    let url = format!(
+        "https://{}/k/v1/records.json?app={}&query={}",
+        config.domain,
+        config.app_id,
+        urlencoded(query)
+    );
+
+    let resp = client
+        .get(&url)
+        .header("X-Cybozu-API-Token", &config.api_token)
+        .send();
+
+    let records: Vec<KintoneRecord> = match resp {
+        Ok(r) => match r.json::<KintoneRecordsResponse>() {
+            Ok(data) => data.records,
+            Err(_) => return Vec::new(),
+        },
+        Err(_) => return Vec::new(),
+    };
+
+    let now = Utc::now();
+    let mut tasks: Vec<(f64, GlobalTask)> = records
+        .into_iter()
+        .map(|r| {
+            let id = r.id.value.unwrap_or_default();
+            let title = r.title.value.unwrap_or_default();
+            let status_raw = r.status.value.unwrap_or_default();
+            let priority_str = r.priority.value.unwrap_or_default();
+            let deadline_str = r.deadline.value.unwrap_or_default();
+            let created_str = r.created_at.value.unwrap_or_default();
+
+            let status = match status_raw.as_str() {
+                "in_progress" => "in_progress",
+                _ => "pending",
+            }
+            .to_string();
+
+            // Priority mapping
+            let priority = match priority_str.as_str() {
+                "urgent" => 1,
+                "this_week" => 2,
+                _ => 3, // someday
+            };
+
+            // Priority score calculation
+            let base_score: f64 = match priority_str.as_str() {
+                "urgent" => 100.0,
+                "this_week" => 50.0,
+                _ => 10.0,
+            };
+
+            // Deadline bonus
+            let deadline_score = if !deadline_str.is_empty() {
+                if let Ok(dl) = DateTime::parse_from_rfc3339(&deadline_str) {
+                    let days_left = dl.signed_duration_since(now).num_days();
+                    if days_left < 0 {
+                        30.0 // overdue
+                    } else if days_left <= 1 {
+                        20.0
+                    } else if days_left <= 3 {
+                        10.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    // Try YYYY-MM-DD format
+                    if let Ok(dl) = chrono::NaiveDate::parse_from_str(&deadline_str, "%Y-%m-%d") {
+                        let today = now.date_naive();
+                        let days_left = (dl - today).num_days();
+                        if days_left < 0 {
+                            30.0
+                        } else if days_left <= 1 {
+                            20.0
+                        } else if days_left <= 3 {
+                            10.0
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    }
+                }
+            } else {
+                0.0
+            };
+
+            // Staleness penalty (older = higher priority bump)
+            let stale_score = if !created_str.is_empty() {
+                if let Ok(ct) = DateTime::parse_from_rfc3339(&created_str) {
+                    let days_old = now.signed_duration_since(ct).num_days();
+                    (days_old as f64 * 0.5).min(15.0)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            let score = base_score + deadline_score + stale_score;
+
+            let task = GlobalTask {
+                id,
+                title,
+                status,
+                priority,
+                created_at: created_str,
+                updated_at: String::new(),
+            };
+
+            (score, task)
+        })
+        .collect();
+
+    // Sort by score descending
+    tasks.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    tasks.into_iter().map(|(_, t)| t).collect()
+}
+
+fn update_kintone_task_status(config: &KintoneConfig, record_id: &str, new_status: &str) {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let url = format!("https://{}/k/v1/record.json", config.domain);
+
+    let mut record_fields = serde_json::Map::new();
+    record_fields.insert(
+        "status".to_string(),
+        serde_json::json!({"value": new_status}),
+    );
+    if new_status == "done" {
+        record_fields.insert(
+            "completed_at".to_string(),
+            serde_json::json!({"value": Utc::now().to_rfc3339()}),
+        );
+    }
+
+    let body = serde_json::json!({
+        "app": config.app_id,
+        "id": record_id,
+        "record": record_fields,
+    });
+
+    let _ = client
+        .put(&url)
+        .header("X-Cybozu-API-Token", &config.api_token)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send();
+}
+
+fn urlencoded(s: &str) -> String {
+    let mut result = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(b as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    result
+}
+
+// ============================================================================
 // CLI
 // ============================================================================
 
@@ -45,44 +300,6 @@ enum Commands {
     Hook {
         /// Event name (PreToolUse, PostToolUse, Notification, Stop, UserPromptSubmit)
         event: String,
-    },
-    /// Manage global tasks
-    Task {
-        #[command(subcommand)]
-        action: TaskAction,
-    },
-}
-
-#[derive(Subcommand)]
-enum TaskAction {
-    /// Add a new task
-    Add {
-        /// Task title
-        title: String,
-        /// Priority (1=high, 2=medium, 3=low)
-        #[arg(short, long, default_value = "2")]
-        priority: i32,
-    },
-    /// List tasks
-    List {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-    /// Mark task as completed
-    Done {
-        /// Task ID
-        id: String,
-    },
-    /// Start a task (mark as in_progress)
-    Start {
-        /// Task ID
-        id: String,
-    },
-    /// Delete a task
-    Delete {
-        /// Task ID
-        id: String,
     },
 }
 
@@ -197,12 +414,6 @@ struct GlobalTask {
     updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct GlobalTasksFile {
-    tasks: Vec<GlobalTask>,
-    history: Vec<GlobalTask>,
-    updated_at: String,
-}
 
 // ============================================================================
 // App State
@@ -223,10 +434,8 @@ struct App {
     show_stale: bool,
     focus_mode: FocusMode,
     should_quit: bool,
-    show_task_input: bool,
-    task_input: String,
-    task_priority: i32,
     show_help: bool,
+    kintone_config: Option<KintoneConfig>,
 }
 
 impl App {
@@ -250,10 +459,8 @@ impl App {
             show_stale: false,
             focus_mode: FocusMode::Sessions,
             should_quit: false,
-            show_task_input: false,
-            task_input: String::new(),
-            task_priority: 2,
             show_help: false,
+            kintone_config: load_kintone_config(),
         }
     }
 
@@ -331,18 +538,14 @@ impl App {
 // File Paths
 // ============================================================================
 
-fn get_claude_monitor_dir() -> PathBuf {
+fn get_data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
-        .join(".claude-monitor")
+        .join(".config/wez-sidebar")
 }
 
 fn get_sessions_file_path() -> PathBuf {
-    get_claude_monitor_dir().join("sessions.json")
-}
-
-fn get_global_tasks_file_path() -> PathBuf {
-    get_claude_monitor_dir().join("global-tasks.json")
+    get_data_dir().join("sessions.json")
 }
 
 // ============================================================================
@@ -514,124 +717,6 @@ fn delete_session(session: &SessionItem) {
     let mut store = read_session_store();
     store.sessions.remove(&session.session_id);
     let _ = write_session_store(&store);
-}
-
-// ============================================================================
-// Global Task Management
-// ============================================================================
-
-fn read_global_tasks() -> GlobalTasksFile {
-    let path = get_global_tasks_file_path();
-    match fs::read_to_string(&path) {
-        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
-        Err(_) => GlobalTasksFile::default(),
-    }
-}
-
-fn write_global_tasks(file: &GlobalTasksFile) -> Result<()> {
-    let path = get_global_tasks_file_path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let mut file = file.clone();
-    file.updated_at = Utc::now().to_rfc3339();
-    let data = serde_json::to_string_pretty(&file)?;
-    fs::write(path, data)?;
-    Ok(())
-}
-
-fn generate_task_id() -> String {
-    let now = Local::now();
-    let file = read_global_tasks();
-    let prefix = format!("task_{}_", now.format("%Y%m%d"));
-
-    let mut max_num = 0;
-    for task in file.tasks.iter().chain(file.history.iter()) {
-        if task.id.starts_with(&prefix) {
-            if let Ok(num) = task.id[prefix.len()..].parse::<i32>() {
-                max_num = max_num.max(num);
-            }
-        }
-    }
-
-    format!("{}{:03}", prefix, max_num + 1)
-}
-
-fn sort_global_tasks(tasks: &mut Vec<GlobalTask>) {
-    tasks.sort_by(|a, b| {
-        let status_order = |s: &str| match s {
-            "in_progress" => 0,
-            "pending" => 1,
-            _ => 2,
-        };
-        let sa = status_order(&a.status);
-        let sb = status_order(&b.status);
-        if sa != sb {
-            return sa.cmp(&sb);
-        }
-        if a.priority != b.priority {
-            return a.priority.cmp(&b.priority);
-        }
-        a.created_at.cmp(&b.created_at)
-    });
-}
-
-fn add_global_task(title: &str, priority: i32) -> Result<GlobalTask> {
-    let mut file = read_global_tasks();
-    let now = Utc::now().to_rfc3339();
-
-    let task = GlobalTask {
-        id: generate_task_id(),
-        title: title.to_string(),
-        status: "pending".to_string(),
-        priority,
-        created_at: now.clone(),
-        updated_at: now,
-    };
-
-    file.tasks.push(task.clone());
-    sort_global_tasks(&mut file.tasks);
-    write_global_tasks(&file)?;
-    Ok(task)
-}
-
-fn start_global_task(id: &str) -> Result<()> {
-    let mut file = read_global_tasks();
-    let now = Utc::now().to_rfc3339();
-
-    for task in &mut file.tasks {
-        if task.id == id {
-            task.status = "in_progress".to_string();
-            task.updated_at = now;
-            sort_global_tasks(&mut file.tasks);
-            return write_global_tasks(&file);
-        }
-    }
-    anyhow::bail!("Task not found: {}", id);
-}
-
-fn complete_global_task(id: &str) -> Result<()> {
-    let mut file = read_global_tasks();
-    let now = Utc::now().to_rfc3339();
-
-    if let Some(pos) = file.tasks.iter().position(|t| t.id == id) {
-        let mut task = file.tasks.remove(pos);
-        task.status = "completed".to_string();
-        task.updated_at = now;
-        file.history.push(task);
-        return write_global_tasks(&file);
-    }
-    anyhow::bail!("Task not found: {}", id);
-}
-
-fn delete_global_task(id: &str) -> Result<()> {
-    let mut file = read_global_tasks();
-
-    if let Some(pos) = file.tasks.iter().position(|t| t.id == id) {
-        file.tasks.remove(pos);
-        return write_global_tasks(&file);
-    }
-    anyhow::bail!("Task not found: {}", id);
 }
 
 // ============================================================================
@@ -979,10 +1064,6 @@ fn ui(frame: &mut Frame, app: &mut App) {
     render_sessions(frame, app, chunks[2]);
     render_status_bar(frame, app, chunks[3]);
 
-    if app.show_task_input {
-        render_task_input(frame, app);
-    }
-
     if app.show_help {
         render_help_popup(frame, app);
     }
@@ -1036,9 +1117,14 @@ fn render_tasks(frame: &mut Frame, app: &mut App, area: Rect) {
     let active_count = app.global_tasks.iter().filter(|t| t.status != "completed").count();
     let total_count = app.global_tasks.len();
 
-    let items: Vec<ListItem> = if app.global_tasks.is_empty() {
+    let items: Vec<ListItem> = if app.kintone_config.is_none() {
         vec![ListItem::new(Span::styled(
-            "No tasks. Press 't' then 'a' to add.",
+            "kintone未設定",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else if app.global_tasks.is_empty() {
+        vec![ListItem::new(Span::styled(
+            "タスクなし",
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
@@ -1195,12 +1281,10 @@ fn render_help_popup(frame: &mut Frame, app: &App) {
 
     let lines = if app.focus_mode == FocusMode::Tasks {
         vec![
-            Line::from(" 📋 Tasks Mode"),
+            Line::from(" 📋 Tasks Mode (kintone)"),
             Line::from(""),
-            Line::from(" a     新規タスク追加"),
-            Line::from(" d     タスク完了"),
             Line::from(" s     タスク開始"),
-            Line::from(" x     タスク削除"),
+            Line::from(" d     タスク完了"),
             Line::from(" j/k   上下移動"),
             Line::from(" Esc   セッションに戻る"),
             Line::from(" q     終了"),
@@ -1233,34 +1317,6 @@ fn render_help_popup(frame: &mut Frame, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_task_input(frame: &mut Frame, app: &App) {
-    let area = centered_rect(40, 9, frame.area());
-
-    let priority_text = match app.task_priority {
-        1 => "(●)高 ( )中 ( )低",
-        3 => "( )高 ( )中 (●)低",
-        _ => "( )高 (●)中 ( )低",
-    };
-
-    let lines = vec![
-        Line::from(format!(" タイトル: {}_", app.task_input)),
-        Line::from(""),
-        Line::from(format!(" 優先度:   {}", priority_text)),
-        Line::from(""),
-        Line::from(" Enter:追加  1/2/3:優先度  Esc:キャンセル"),
-    ];
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" 新規タスク ");
-
-    let paragraph = Paragraph::new(lines).block(block);
-
-    // Clear the area first
-    frame.render_widget(Clear, area);
-    frame.render_widget(paragraph, area);
-}
-
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
@@ -1284,7 +1340,7 @@ enum AppEvent {
     Tick,
     Key(event::KeyEvent),
     SessionsUpdated,
-    TasksUpdated,
+    KintoneTasksUpdated(Vec<GlobalTask>),
     UsageUpdated(UsageLimits),
 }
 
@@ -1298,9 +1354,8 @@ fn run_tui() -> Result<()> {
 
     let mut app = App::new();
 
-    // Load initial data (usage is loaded async to avoid keychain blocking)
+    // Load initial data (usage and kintone tasks are loaded async)
     app.sessions = load_sessions_data(30);
-    app.global_tasks = read_global_tasks().tasks;
 
     // Setup channels for events
     let (tx, rx) = mpsc::channel::<AppEvent>();
@@ -1337,30 +1392,14 @@ fn run_tui() -> Result<()> {
         }
     });
 
-    // File watcher for global tasks
-    let tx_tasks = tx.clone();
-    let tasks_path = get_global_tasks_file_path();
-    let tasks_dir = tasks_path.parent().unwrap().to_path_buf();
-    thread::spawn(move || {
-        let (watcher_tx, watcher_rx) = mpsc::channel();
-        let mut watcher: RecommendedWatcher =
-            Watcher::new(watcher_tx, NotifyConfig::default()).unwrap();
-        let _ = fs::create_dir_all(&tasks_dir);
-        let _ = watcher.watch(&tasks_dir, RecursiveMode::NonRecursive);
-
-        loop {
-            if let Ok(Ok(event)) = watcher_rx.recv() {
-                if event
-                    .paths
-                    .iter()
-                    .any(|p| p.file_name().map(|n| n == "global-tasks.json").unwrap_or(false))
-                {
-                    thread::sleep(Duration::from_millis(150));
-                    let _ = tx_tasks.send(AppEvent::TasksUpdated);
-                }
-            }
-        }
-    });
+    // Kintone tasks: initial load only (further updates triggered by user actions)
+    if let Some(kintone_cfg) = app.kintone_config.clone() {
+        let tx_kintone = tx.clone();
+        thread::spawn(move || {
+            let tasks = fetch_kintone_tasks(&kintone_cfg);
+            let _ = tx_kintone.send(AppEvent::KintoneTasksUpdated(tasks));
+        });
+    }
 
     // Usage refresh thread (also handles initial load)
     let tx_usage = tx.clone();
@@ -1398,10 +1437,7 @@ fn run_tui() -> Result<()> {
             }
             Ok(AppEvent::Key(key)) => {
                 if app.show_help {
-                    // Any key closes help
                     app.show_help = false;
-                } else if app.show_task_input {
-                    handle_task_input_key(&mut app, key);
                 } else {
                     handle_key(&mut app, key);
                 }
@@ -1409,8 +1445,8 @@ fn run_tui() -> Result<()> {
             Ok(AppEvent::SessionsUpdated) => {
                 app.sessions = load_sessions_data(30);
             }
-            Ok(AppEvent::TasksUpdated) => {
-                app.global_tasks = read_global_tasks().tasks;
+            Ok(AppEvent::KintoneTasksUpdated(tasks)) => {
+                app.global_tasks = tasks;
             }
             Ok(AppEvent::UsageUpdated(usage)) => {
                 app.usage = usage;
@@ -1455,7 +1491,9 @@ fn handle_sessions_key(app: &mut App, key: event::KeyEvent) {
         KeyCode::Char('f') => app.show_stale = !app.show_stale,
         KeyCode::Char('r') => {
             app.sessions = load_sessions_data(30);
-            app.global_tasks = read_global_tasks().tasks;
+            if let Some(ref config) = app.kintone_config {
+                app.global_tasks = fetch_kintone_tasks(config);
+            }
             app.usage = load_usage_data();
         }
         KeyCode::Char('d') => {
@@ -1493,35 +1531,27 @@ fn handle_tasks_key(app: &mut App, key: event::KeyEvent) {
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Esc => app.focus_mode = FocusMode::Sessions,
-        KeyCode::Char('a') => {
-            app.show_task_input = true;
-            app.task_input.clear();
-            app.task_priority = 2;
+        KeyCode::Char('s') => {
+            if let (Some(idx), Some(ref config)) = (app.task_state.selected(), &app.kintone_config) {
+                if idx < app.global_tasks.len() {
+                    let id = app.global_tasks[idx].id.clone();
+                    let config = config.clone();
+                    update_kintone_task_status(&config, &id, "in_progress");
+                    app.global_tasks = fetch_kintone_tasks(&config);
+                }
+            }
         }
         KeyCode::Char('d') => {
-            if let Some(idx) = app.task_state.selected() {
+            if let (Some(idx), Some(ref config)) = (app.task_state.selected(), &app.kintone_config) {
                 if idx < app.global_tasks.len() {
                     let id = app.global_tasks[idx].id.clone();
-                    let _ = complete_global_task(&id);
-                    app.global_tasks = read_global_tasks().tasks;
-                }
-            }
-        }
-        KeyCode::Char('s') => {
-            if let Some(idx) = app.task_state.selected() {
-                if idx < app.global_tasks.len() {
-                    let id = app.global_tasks[idx].id.clone();
-                    let _ = start_global_task(&id);
-                    app.global_tasks = read_global_tasks().tasks;
-                }
-            }
-        }
-        KeyCode::Char('x') => {
-            if let Some(idx) = app.task_state.selected() {
-                if idx < app.global_tasks.len() {
-                    let id = app.global_tasks[idx].id.clone();
-                    let _ = delete_global_task(&id);
-                    app.global_tasks = read_global_tasks().tasks;
+                    let config = config.clone();
+                    update_kintone_task_status(&config, &id, "done");
+                    app.global_tasks = fetch_kintone_tasks(&config);
+                    if !app.global_tasks.is_empty() {
+                        let new_idx = idx.min(app.global_tasks.len() - 1);
+                        app.task_state.select(Some(new_idx));
+                    }
                 }
             }
         }
@@ -1529,82 +1559,6 @@ fn handle_tasks_key(app: &mut App, key: event::KeyEvent) {
         KeyCode::Down | KeyCode::Char('j') => app.next_task(),
         _ => {}
     }
-}
-
-fn handle_task_input_key(app: &mut App, key: event::KeyEvent) {
-    match key.code {
-        KeyCode::Esc => {
-            app.show_task_input = false;
-        }
-        KeyCode::Enter => {
-            if !app.task_input.is_empty() {
-                let _ = add_global_task(&app.task_input, app.task_priority);
-                app.global_tasks = read_global_tasks().tasks;
-            }
-            app.show_task_input = false;
-        }
-        KeyCode::Char('1') if !app.task_input.is_empty() || app.task_input.is_empty() => {
-            // Allow setting priority with number keys when input is empty or after typing
-            if app.task_input.is_empty() {
-                app.task_priority = 1;
-            } else {
-                app.task_input.push('1');
-            }
-        }
-        KeyCode::Char('2') if app.task_input.is_empty() => app.task_priority = 2,
-        KeyCode::Char('3') if app.task_input.is_empty() => app.task_priority = 3,
-        KeyCode::Backspace => {
-            app.task_input.pop();
-        }
-        KeyCode::Char(c) => {
-            app.task_input.push(c);
-        }
-        _ => {}
-    }
-}
-
-// ============================================================================
-// CLI Task Commands
-// ============================================================================
-
-fn handle_task_cli(action: TaskAction) -> Result<()> {
-    match action {
-        TaskAction::Add { title, priority } => {
-            let p = priority.clamp(1, 3);
-            let task = add_global_task(&title, p)?;
-            println!("Added: {} ({})", task.title, task.id);
-        }
-        TaskAction::List { json } => {
-            let file = read_global_tasks();
-            if json {
-                println!("{}", serde_json::to_string_pretty(&file.tasks)?);
-            } else if file.tasks.is_empty() {
-                println!("No tasks.");
-            } else {
-                let priority_names = ["", "高", "中", "低"];
-                for task in &file.tasks {
-                    let status_icon = if task.status == "in_progress" { "▶" } else { " " };
-                    println!(
-                        "{} [{}] [{}] {}",
-                        status_icon, task.id, priority_names[task.priority as usize], task.title
-                    );
-                }
-            }
-        }
-        TaskAction::Done { id } => {
-            complete_global_task(&id)?;
-            println!("Completed: {}", id);
-        }
-        TaskAction::Start { id } => {
-            start_global_task(&id)?;
-            println!("Started: {}", id);
-        }
-        TaskAction::Delete { id } => {
-            delete_global_task(&id)?;
-            println!("Deleted: {}", id);
-        }
-    }
-    Ok(())
 }
 
 // ============================================================================
@@ -1617,9 +1571,6 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Hook { event }) => {
             handle_hook(&event)?;
-        }
-        Some(Commands::Task { action }) => {
-            handle_task_cli(action)?;
         }
         None => {
             run_tui()?;
