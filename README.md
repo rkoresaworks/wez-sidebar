@@ -8,9 +8,9 @@ WezTerm sidebar / dock for monitoring [Claude Code](https://docs.anthropic.com/e
 |:---:|:---:|
 | ![Sidebar](docs/images/sidebar-with-panes.png) | ![Dock](docs/images/dock-mode.png) |
 
-| Mode select | Overlay | Sidebar only |
-|:---:|:---:|:---:|
-| ![Select](docs/images/mode-select.png) | ![Overlay](docs/images/wezterm-overlay.png) | ![Sidebar](docs/images/sidebar-mode.png) |
+| Mode select | Overlay |
+|:---:|:---:|
+| ![Select](docs/images/mode-select.png) | ![Overlay](docs/images/wezterm-overlay.png) |
 
 ## Features
 

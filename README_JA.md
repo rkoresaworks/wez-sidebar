@@ -8,9 +8,9 @@
 |:---:|:---:|
 | ![Sidebar](docs/images/sidebar-with-panes.png) | ![Dock](docs/images/dock-mode.png) |
 
-| モード選択 | Overlay | Sidebar 単体 |
-|:---:|:---:|:---:|
-| ![Select](docs/images/mode-select.png) | ![Overlay](docs/images/wezterm-overlay.png) | ![Sidebar](docs/images/sidebar-mode.png) |
+| モード選択 | Overlay |
+|:---:|:---:|
+| ![Select](docs/images/mode-select.png) | ![Overlay](docs/images/wezterm-overlay.png) |
 
 ## 機能
 
