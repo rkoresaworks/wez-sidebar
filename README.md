@@ -43,19 +43,19 @@ Add the following to `~/.claude/settings.json`:
 {
   "hooks": {
     "PreToolUse": [
-      { "type": "command", "command": "wez-sidebar hook PreToolUse" }
+      { "type": "command", "command": "~/.cargo/bin/wez-sidebar hook PreToolUse" }
     ],
     "PostToolUse": [
-      { "type": "command", "command": "wez-sidebar hook PostToolUse" }
+      { "type": "command", "command": "~/.cargo/bin/wez-sidebar hook PostToolUse" }
     ],
     "Notification": [
-      { "type": "command", "command": "wez-sidebar hook Notification" }
+      { "type": "command", "command": "~/.cargo/bin/wez-sidebar hook Notification" }
     ],
     "Stop": [
-      { "type": "command", "command": "wez-sidebar hook Stop" }
+      { "type": "command", "command": "~/.cargo/bin/wez-sidebar hook Stop" }
     ],
     "UserPromptSubmit": [
-      { "type": "command", "command": "wez-sidebar hook UserPromptSubmit" }
+      { "type": "command", "command": "~/.cargo/bin/wez-sidebar hook UserPromptSubmit" }
     ]
   }
 }

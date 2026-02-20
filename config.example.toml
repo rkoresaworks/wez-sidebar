@@ -23,11 +23,11 @@ wezterm_path = "/opt/homebrew/bin/wezterm"
 #
 # Hook setup in ~/.claude/settings.json:
 #   "hooks": {
-#     "PreToolUse":        [{ "command": "wez-sidebar hook PreToolUse" }],
-#     "PostToolUse":       [{ "command": "wez-sidebar hook PostToolUse" }],
-#     "Notification":      [{ "command": "wez-sidebar hook Notification" }],
-#     "Stop":              [{ "command": "wez-sidebar hook Stop" }],
-#     "UserPromptSubmit":  [{ "command": "wez-sidebar hook UserPromptSubmit" }]
+#     "PreToolUse":        [{ "command": "~/.cargo/bin/wez-sidebar hook PreToolUse" }],
+#     "PostToolUse":       [{ "command": "~/.cargo/bin/wez-sidebar hook PostToolUse" }],
+#     "Notification":      [{ "command": "~/.cargo/bin/wez-sidebar hook Notification" }],
+#     "Stop":              [{ "command": "~/.cargo/bin/wez-sidebar hook Stop" }],
+#     "UserPromptSubmit":  [{ "command": "~/.cargo/bin/wez-sidebar hook UserPromptSubmit" }]
 #   }
 
 # --------------------------------------------------------------------------
