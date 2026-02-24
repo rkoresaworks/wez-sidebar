@@ -69,7 +69,8 @@ fn builtin_handle_hook(event_name: &str, config: &AppConfig, input: &str) -> Res
     )?;
 
     // Desktop notification on permission prompt
-    if new_status == "waiting_input" {
+    // Skip when hook_command is set (external command handles its own notifications)
+    if new_status == "waiting_input" && config.hook_command.is_none() {
         send_permission_notification(&cwd, &tty, &config.wezterm_path);
     }
 
