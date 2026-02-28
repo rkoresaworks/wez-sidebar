@@ -21,10 +21,12 @@ use std::{
     time::Duration,
 };
 
+use crate::api_client;
 use crate::app::{App, FocusMode};
 use crate::config::{expand_tilde, AppConfig};
 use crate::session::{
     activate_pane, delete_session, get_pane_text, get_sessions_file_path, load_sessions_data,
+    write_session_store,
 };
 use crate::tasks::load_tasks;
 use crate::types::{AppEvent, SessionItem};
@@ -51,7 +53,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
         render_tasks(frame, app, chunks[1]);
         render_sessions(frame, app, chunks[2]);
         render_preview(frame, app, chunks[3]);
-        render_status_bar(frame, chunks[4]);
+        render_status_bar(frame, app, chunks[4]);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -66,7 +68,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
         render_usage(frame, app, chunks[0]);
         render_tasks(frame, app, chunks[1]);
         render_sessions(frame, app, chunks[2]);
-        render_status_bar(frame, chunks[3]);
+        render_status_bar(frame, app, chunks[3]);
     }
 
     if app.show_help {
@@ -216,6 +218,8 @@ fn render_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
             // Line 1: marker + directory name
             let marker = if sess.is_disconnected {
                 "⚫"
+            } else if sess.is_yolo {
+                "🤖"
             } else if sess.is_current {
                 "🟢"
             } else {
@@ -338,11 +342,22 @@ fn render_preview(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-pub fn render_status_bar(frame: &mut Frame, area: Rect) {
-    // Minimal status bar for narrow sidebar
-    let text = "?:help q:quit";
-    let style = Style::default().fg(Color::DarkGray);
-    let paragraph = Paragraph::new(text).style(style);
+pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let api_indicator = if app.config.api_url.is_some() {
+        if app.api_connected {
+            Span::styled("● ", Style::default().fg(Color::Green))
+        } else {
+            Span::styled("○ ", Style::default().fg(Color::Red))
+        }
+    } else {
+        Span::raw("")
+    };
+
+    let text = Line::from(vec![
+        api_indicator,
+        Span::styled("?:help q:quit", Style::default().fg(Color::DarkGray)),
+    ]);
+    let paragraph = Paragraph::new(text);
     frame.render_widget(paragraph, area);
 }
 
@@ -596,6 +611,27 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
         });
     }
 
+    // API polling thread (when api_url is configured)
+    if let Some(ref api_url) = app.config.api_url {
+        let tx_api = tx.clone();
+        let api_url = api_url.clone();
+        let data_dir = app.config.data_dir.clone();
+        thread::spawn(move || {
+            loop {
+                let connected = if let Some(store) = api_client::fetch_sessions(&api_url) {
+                    // Cache locally for fallback
+                    let _ = write_session_store(&store, &data_dir);
+                    true
+                } else {
+                    false
+                };
+                let _ = tx_api.send(AppEvent::ApiStatusChanged(connected));
+                let _ = tx_api.send(AppEvent::SessionsUpdated);
+                thread::sleep(Duration::from_secs(3));
+            }
+        });
+    }
+
     // Usage refresh thread (also handles initial load)
     let tx_usage = tx.clone();
     thread::spawn(move || {
@@ -650,6 +686,9 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
             }
             Ok(AppEvent::UsageUpdated(usage)) => {
                 app.usage = usage;
+            }
+            Ok(AppEvent::ApiStatusChanged(connected)) => {
+                app.api_connected = connected;
             }
             Err(_) => {}
         }

@@ -53,8 +53,9 @@ fn builtin_handle_hook(event_name: &str, config: &AppConfig, input: &str) -> Res
         return Ok(());
     }
 
-    // Detect TTY from ancestors
+    // Detect TTY and yolo mode from ancestors
     let tty = get_tty_from_ancestors();
+    let is_yolo = detect_yolo_mode();
 
     // Update session
     let cwd = payload.cwd.unwrap_or_default();
@@ -65,6 +66,7 @@ fn builtin_handle_hook(event_name: &str, config: &AppConfig, input: &str) -> Res
         &cwd,
         &tty,
         notification_type,
+        is_yolo,
         &config.data_dir,
     )?;
 
@@ -108,6 +110,39 @@ fn get_tty_from_ancestors() -> String {
     }
 
     String::new()
+}
+
+fn detect_yolo_mode() -> bool {
+    let mut ppid = std::os::unix::process::parent_id() as i32;
+
+    for _ in 0..5 {
+        let output = Command::new("ps")
+            .args(["-o", "args=", "-p", &ppid.to_string()])
+            .output();
+
+        if let Ok(out) = output {
+            let args = String::from_utf8_lossy(&out.stdout);
+            if args.contains("--dangerously-skip-permissions") {
+                return true;
+            }
+        }
+
+        let output = Command::new("ps")
+            .args(["-o", "ppid=", "-p", &ppid.to_string()])
+            .output();
+
+        if let Ok(out) = output {
+            if let Ok(new_ppid) = String::from_utf8_lossy(&out.stdout).trim().parse::<i32>() {
+                ppid = new_ppid;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    false
 }
 
 pub fn determine_status(
@@ -188,6 +223,7 @@ pub fn update_session(
     cwd: &str,
     tty: &str,
     notification_type: Option<&str>,
+    is_yolo: bool,
     data_dir: &str,
 ) -> Result<String> {
     let mut store = read_session_store(data_dir);
@@ -245,6 +281,7 @@ pub fn update_session(
             active_task,
             tasks_completed,
             tasks_total,
+            is_yolo,
         },
     );
 
@@ -276,6 +313,7 @@ mod tests {
             active_task: None,
             tasks_completed: 0,
             tasks_total: 0,
+            is_yolo: false,
         }
     }
 
@@ -387,6 +425,7 @@ mod tests {
             "/tmp/project",
             "/dev/ttys001",
             None,
+            false,
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -418,6 +457,7 @@ mod tests {
             "/tmp/project",
             "/dev/ttys005",
             None,
+            false,
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -444,6 +484,7 @@ mod tests {
             "/tmp/proj",
             "/dev/ttys001",
             None,
+            false,
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -456,6 +497,7 @@ mod tests {
             "/tmp/proj",
             "/dev/ttys001",
             None,
+            false,
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -468,6 +510,7 @@ mod tests {
             "/tmp/proj",
             "/dev/ttys001",
             None,
+            false,
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -480,6 +523,7 @@ mod tests {
             "/tmp/proj",
             "/dev/ttys001",
             None,
+            false,
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -500,6 +544,7 @@ mod tests {
             "/tmp/project",
             "", // empty TTY
             None,
+            false,
             dir.path().to_str().unwrap(),
         )
         .unwrap();

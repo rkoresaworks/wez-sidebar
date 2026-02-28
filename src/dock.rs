@@ -56,7 +56,7 @@ fn dock_ui(frame: &mut Frame, app: &mut App) {
     render_dock_usage(frame, app, columns[0]);
     render_dock_tasks(frame, app, columns[1]);
     render_dock_sessions(frame, app, columns[2]);
-    render_status_bar(frame, main_layout[1]);
+    render_status_bar(frame, app, main_layout[1]);
 
     if app.show_help {
         render_dock_help_popup(frame);
@@ -275,6 +275,8 @@ fn render_dock_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
             // Line 1: marker + name + status
             let marker = if sess.is_disconnected {
                 "⚫"
+            } else if sess.is_yolo {
+                "🤖"
             } else if sess.is_current {
                 "🟢"
             } else {
@@ -567,6 +569,9 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
             }
             Ok(AppEvent::UsageUpdated(usage)) => {
                 app.usage = usage;
+            }
+            Ok(AppEvent::ApiStatusChanged(connected)) => {
+                app.api_connected = connected;
             }
             Err(_) => {}
         }

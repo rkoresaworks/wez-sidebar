@@ -168,6 +168,7 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                 active_task: sess.active_task.clone(),
                 tasks_completed: sess.tasks_completed,
                 tasks_total: sess.tasks_total,
+                is_yolo: sess.is_yolo,
             });
         } else {
             // Disconnected session
@@ -187,6 +188,7 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                     active_task: sess.active_task.clone(),
                     tasks_completed: sess.tasks_completed,
                     tasks_total: sess.tasks_total,
+                    is_yolo: sess.is_yolo,
                 });
             }
         }

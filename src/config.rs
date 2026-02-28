@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub hook_command: Option<String>,
     /// Tasks cache file path (no tasks shown if omitted)
     pub tasks_file: Option<String>,
+    /// REST API base URL (e.g., "http://ec2-host:3000")
+    pub api_url: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -36,6 +38,7 @@ impl Default for AppConfig {
             data_dir: "~/.config/wez-sidebar".to_string(),
             hook_command: None,
             tasks_file: None,
+            api_url: None,
         }
     }
 }

@@ -27,6 +27,8 @@ pub struct Session {
     pub tasks_completed: i32,
     #[serde(default)]
     pub tasks_total: i32,
+    #[serde(default)]
+    pub is_yolo: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +46,7 @@ pub struct SessionItem {
     pub active_task: Option<String>,
     pub tasks_completed: i32,
     pub tasks_total: i32,
+    pub is_yolo: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -153,4 +156,5 @@ pub enum AppEvent {
     SessionsUpdated,
     TasksUpdated(Vec<GlobalTask>),
     UsageUpdated(UsageLimits),
+    ApiStatusChanged(bool),
 }

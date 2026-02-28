@@ -23,6 +23,7 @@ pub struct App {
     pub show_preview: bool,
     pub pane_preview: Vec<String>,
     pub preview_scroll: u16,
+    pub api_connected: bool,
 }
 
 impl App {
@@ -51,6 +52,7 @@ impl App {
             show_preview: false,
             pane_preview: Vec::new(),
             preview_scroll: 0,
+            api_connected: false,
         }
     }
 
