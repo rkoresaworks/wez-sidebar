@@ -2,7 +2,6 @@ mod api_client;
 mod app;
 mod config;
 mod dock;
-mod hooks;
 mod session;
 mod tasks;
 mod types;
@@ -14,7 +13,6 @@ use clap::{Parser, Subcommand};
 
 use crate::config::load_config;
 use crate::dock::run_dock;
-use crate::hooks::handle_hook;
 use crate::session::{get_wezterm_panes, load_sessions_data};
 use crate::ui::run_tui;
 
@@ -28,11 +26,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Handle Claude Code hook event
-    Hook {
-        /// Event name (PreToolUse, PostToolUse, Notification, Stop, UserPromptSubmit)
-        event: String,
-    },
     /// Run as horizontal dock (bottom bar mode)
     Dock,
     /// Print diagnostic info for debugging
@@ -44,9 +37,6 @@ fn main() -> Result<()> {
     let config = load_config();
 
     match cli.command {
-        Some(Commands::Hook { event }) => {
-            handle_hook(&event, &config)?;
-        }
         Some(Commands::Dock) => {
             run_dock(config)?;
         }
