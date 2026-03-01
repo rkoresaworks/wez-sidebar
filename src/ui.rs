@@ -550,9 +550,11 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
     });
 
     // File watcher for sessions
+    // sessions.json 変更時に health check もピギーバック実行
     let tx_sessions = tx.clone();
     let sessions_path = get_sessions_file_path(&app.config.data_dir);
     let sessions_dir = sessions_path.parent().unwrap().to_path_buf();
+    let sessions_api_url = app.config.api_url.clone();
     thread::spawn(move || {
         let (watcher_tx, watcher_rx) = mpsc::channel();
         let mut watcher: RecommendedWatcher =
@@ -569,6 +571,11 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
                 {
                     thread::sleep(Duration::from_millis(150));
                     let _ = tx_sessions.send(AppEvent::SessionsUpdated);
+                    // Hook が発火した = Claude Code がアクティブ → health check
+                    if let Some(ref url) = sessions_api_url {
+                        let connected = api_client::check_health(url);
+                        let _ = tx_sessions.send(AppEvent::ApiStatusChanged(connected));
+                    }
                 }
             }
         }
@@ -620,7 +627,7 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
             loop {
                 let connected = api_client::check_health(&api_url);
                 let _ = tx_api.send(AppEvent::ApiStatusChanged(connected));
-                thread::sleep(Duration::from_secs(30));
+                thread::sleep(Duration::from_secs(3600));
             }
         });
     }
