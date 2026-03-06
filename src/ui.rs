@@ -563,7 +563,7 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
         let _ = watcher.watch(&sessions_dir, RecursiveMode::NonRecursive);
 
         let mut last_usage_fetch = std::time::Instant::now()
-            .checked_sub(Duration::from_secs(180))
+            .checked_sub(Duration::from_secs(600))
             .unwrap_or_else(std::time::Instant::now);
         loop {
             if let Ok(Ok(event)) = watcher_rx.recv() {
@@ -580,7 +580,7 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
                         let _ = tx_sessions.send(AppEvent::ApiStatusChanged(connected));
                     }
                     // Usage: 5分クールダウン
-                    if last_usage_fetch.elapsed() >= Duration::from_secs(180) {
+                    if last_usage_fetch.elapsed() >= Duration::from_secs(600) {
                         let usage = load_usage_data();
                         if usage.five_hour >= 0 {
                             let _ = tx_sessions.send(AppEvent::UsageUpdated(usage));
