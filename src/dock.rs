@@ -477,6 +477,9 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
         let _ = fs::create_dir_all(&sessions_dir);
         let _ = watcher.watch(&sessions_dir, RecursiveMode::NonRecursive);
 
+        let mut last_usage_fetch = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(180))
+            .unwrap_or_else(std::time::Instant::now);
         loop {
             if let Ok(Ok(event)) = watcher_rx.recv() {
                 if event
@@ -486,10 +489,13 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
                 {
                     thread::sleep(Duration::from_millis(150));
                     let _ = tx_sessions.send(AppEvent::SessionsUpdated);
-                    // Hook が発火した = Claude Code がアクティブ → usage 更新
-                    let usage = load_usage_data();
-                    if usage.five_hour >= 0 {
-                        let _ = tx_sessions.send(AppEvent::UsageUpdated(usage));
+                    // Usage: 5分クールダウン
+                    if last_usage_fetch.elapsed() >= Duration::from_secs(180) {
+                        let usage = load_usage_data();
+                        if usage.five_hour >= 0 {
+                            let _ = tx_sessions.send(AppEvent::UsageUpdated(usage));
+                            last_usage_fetch = std::time::Instant::now();
+                        }
                     }
                 }
             }
