@@ -90,7 +90,7 @@ pub struct OAuthData {
     pub access_token: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageLimits {
     pub five_hour: i32,
     pub five_hour_reset: String,

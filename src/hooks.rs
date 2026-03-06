@@ -11,6 +11,7 @@ use std::{
 use crate::config::AppConfig;
 use crate::session::{read_session_store, send_permission_notification, write_session_store};
 use crate::types::{HookPayload, Session};
+use crate::usage::cache_usage_if_stale;
 
 pub fn handle_hook(event_name: &str, config: &AppConfig) -> Result<()> {
     // 1. Read stdin once
@@ -75,6 +76,9 @@ fn builtin_handle_hook(event_name: &str, config: &AppConfig, input: &str) -> Res
     if new_status == "waiting_input" && config.hook_command.is_none() {
         send_permission_notification(&cwd, &tty, &config.wezterm_path);
     }
+
+    // Usage cache: 10分クールダウンで API 取得 → キャッシュファイル書き出し
+    cache_usage_if_stale(&config.data_dir);
 
     Ok(())
 }

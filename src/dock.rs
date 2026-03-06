@@ -29,7 +29,7 @@ use crate::session::{
 use crate::tasks::load_tasks;
 use crate::types::AppEvent;
 use crate::ui::{centered_rect, format_duration, render_status_bar, truncate_name};
-use crate::usage::load_usage_data;
+use crate::usage::load_usage_from_cache;
 
 // ============================================================================
 // Dock Mode Rendering
@@ -428,7 +428,7 @@ fn handle_dock_key(app: &mut App, key: event::KeyEvent) {
         KeyCode::Char('r') => {
             app.sessions = load_sessions_data(&app.config);
             app.global_tasks = load_tasks(&app.config);
-            app.usage = load_usage_data();
+            app.usage = load_usage_from_cache(&app.config.data_dir);
         }
         _ => {}
     }
@@ -466,10 +466,11 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
         let _ = tx_delayed.send(AppEvent::SessionsUpdated);
     });
 
-    // File watcher for sessions
+    // data_dir watcher: sessions.json + usage-cache.json の変更を監視
     let tx_sessions = tx.clone();
     let sessions_path = get_sessions_file_path(&app.config.data_dir);
     let sessions_dir = sessions_path.parent().unwrap().to_path_buf();
+    let sessions_data_dir = app.config.data_dir.clone();
     thread::spawn(move || {
         let (watcher_tx, watcher_rx) = mpsc::channel();
         let mut watcher: RecommendedWatcher =
@@ -477,25 +478,24 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
         let _ = fs::create_dir_all(&sessions_dir);
         let _ = watcher.watch(&sessions_dir, RecursiveMode::NonRecursive);
 
-        let mut last_usage_fetch = std::time::Instant::now()
-            .checked_sub(Duration::from_secs(600))
-            .unwrap_or_else(std::time::Instant::now);
         loop {
             if let Ok(Ok(event)) = watcher_rx.recv() {
-                if event
-                    .paths
-                    .iter()
-                    .any(|p| p.file_name().map(|n| n == "sessions.json").unwrap_or(false))
-                {
+                let is_sessions = event.paths.iter().any(|p| {
+                    p.file_name().map(|n| n == "sessions.json").unwrap_or(false)
+                });
+                let is_usage = event.paths.iter().any(|p| {
+                    p.file_name().map(|n| n == "usage-cache.json").unwrap_or(false)
+                });
+
+                if is_sessions {
                     thread::sleep(Duration::from_millis(150));
                     let _ = tx_sessions.send(AppEvent::SessionsUpdated);
-                    // Usage: 5分クールダウン
-                    if last_usage_fetch.elapsed() >= Duration::from_secs(600) {
-                        let usage = load_usage_data();
-                        if usage.five_hour >= 0 {
-                            let _ = tx_sessions.send(AppEvent::UsageUpdated(usage));
-                            last_usage_fetch = std::time::Instant::now();
-                        }
+                }
+                if is_usage {
+                    thread::sleep(Duration::from_millis(100));
+                    let usage = load_usage_from_cache(&sessions_data_dir);
+                    if usage.five_hour >= 0 {
+                        let _ = tx_sessions.send(AppEvent::UsageUpdated(usage));
                     }
                 }
             }
@@ -536,7 +536,7 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
     }
 
     // Usage: initial load only (subsequent updates piggybacked on sessions watcher)
-    app.usage = load_usage_data();
+    app.usage = load_usage_from_cache(&app.config.data_dir);
 
     // Key event thread
     let tx_key = tx.clone();

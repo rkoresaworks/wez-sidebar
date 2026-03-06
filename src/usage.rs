@@ -1,7 +1,12 @@
 use chrono::{DateTime, Datelike, Local, Timelike, Utc};
-use std::{process::Command, time::Duration};
+use std::path::PathBuf;
+use std::{fs, process::Command, time::Duration};
 
+use crate::config::expand_tilde;
 use crate::types::{KeychainCreds, UsageLimits, UsageResponse};
+
+const USAGE_CACHE_FILE: &str = "usage-cache.json";
+const COOLDOWN_SECS: u64 = 600; // 10 minutes
 
 fn get_keychain_credentials() -> Option<String> {
     // Try keyring crate first
@@ -82,6 +87,45 @@ pub fn load_usage_data() -> UsageLimits {
     }
 
     result
+}
+
+fn get_cache_path(data_dir: &str) -> PathBuf {
+    expand_tilde(data_dir).join(USAGE_CACHE_FILE)
+}
+
+/// Hook から呼ばれる: キャッシュが古ければ API を叩いてキャッシュ更新
+pub fn cache_usage_if_stale(data_dir: &str) {
+    let cache_path = get_cache_path(data_dir);
+
+    // mtime で10分クールダウン判定
+    if let Ok(meta) = fs::metadata(&cache_path) {
+        if let Ok(modified) = meta.modified() {
+            if modified.elapsed().unwrap_or_default() < Duration::from_secs(COOLDOWN_SECS) {
+                return;
+            }
+        }
+    }
+
+    let usage = load_usage_data();
+    if usage.five_hour < 0 {
+        return; // API 失敗時はキャッシュを更新しない
+    }
+
+    if let Ok(json) = serde_json::to_string(&usage) {
+        if let Some(parent) = cache_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&cache_path, json);
+    }
+}
+
+/// TUI から呼ばれる: キャッシュファイルを読むだけ (API は叩かない)
+pub fn load_usage_from_cache(data_dir: &str) -> UsageLimits {
+    let cache_path = get_cache_path(data_dir);
+    match fs::read_to_string(&cache_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => UsageLimits::default(),
+    }
 }
 
 fn calculate_reset_time(resets_at: &str) -> String {
