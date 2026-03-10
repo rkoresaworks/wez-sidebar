@@ -24,8 +24,8 @@ pub fn write_session_store(store: &SessionsFile, data_dir: &str) -> Result<()> {
     }
     let data = serde_json::to_string_pretty(store)?;
 
-    // Atomic write: write to temp file then rename to avoid corruption from concurrent hooks
-    let tmp_path = path.with_extension("json.tmp");
+    // Atomic write: write to PID-unique temp file then rename to avoid corruption from concurrent hooks
+    let tmp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
     fs::write(&tmp_path, data)?;
     fs::rename(&tmp_path, &path)?;
     Ok(())
