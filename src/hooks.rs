@@ -52,17 +52,8 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
         None
     };
 
-    // Extract tasks from TaskCreate/TaskUpdate
-    let existing_tasks = {
-        let store = read_session_store(&config.data_dir);
-        store.sessions.get(&payload.session_id)
-            .map(|s| s.tasks.clone())
-            .unwrap_or_default()
-    };
-    let tasks = extract_tasks(event_name, &payload, &existing_tasks);
-
     // Update session
-    let cwd = payload.cwd.unwrap_or_default();
+    let cwd = payload.cwd.clone().unwrap_or_default();
     let git_branch = resolve_git_branch(&cwd);
     let notification_type = payload.notification_type.as_deref();
     let new_status = update_session(
@@ -76,7 +67,7 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
         is_dangerous,
         git_branch,
         user_message,
-        tasks,
+        &payload,
         &config.data_dir,
     )?;
 
@@ -145,72 +136,82 @@ fn extract_activity(event_name: &str, payload: &HookPayload) -> Option<String> {
     }
 }
 
-fn extract_tasks(
+/// Apply task mutations from TaskCreate (PostToolUse) or TaskUpdate (PreToolUse).
+/// Called inside update_session with existing tasks from the store — no extra file read needed.
+fn apply_task_event(
     event_name: &str,
     payload: &HookPayload,
-    existing_tasks: &[SessionTask],
-) -> Option<Vec<SessionTask>> {
-    let tool = payload.tool_name.as_deref()?;
+    existing_tasks: &mut Vec<SessionTask>,
+) -> bool {
+    let tool = match payload.tool_name.as_deref() {
+        Some(t) => t,
+        None => return false,
+    };
 
     match (event_name, tool) {
-        // PreToolUse TaskCreate: add with placeholder ID (will be replaced by PostToolUse)
-        ("PreToolUse", "TaskCreate") => {
-            let input = payload.tool_input.as_ref()?;
-            let subject = input.get("subject")?.as_str()?;
-            let mut tasks = existing_tasks.to_vec();
-            tasks.push(SessionTask {
-                id: String::new(), // placeholder — PostToolUse will fill the real ID
+        // PostToolUse TaskCreate: input has subject, response has real ID
+        ("PostToolUse", "TaskCreate") => {
+            let input = match payload.tool_input.as_ref() {
+                Some(v) => v,
+                None => return false,
+            };
+            let resp = match payload.tool_response.as_ref() {
+                Some(v) => v,
+                None => return false,
+            };
+            let subject = match input.get("subject").and_then(|v| v.as_str()) {
+                Some(s) => s,
+                None => return false,
+            };
+            let id = resp
+                .get("task")
+                .and_then(|t| t.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            existing_tasks.push(SessionTask {
+                id: id.to_string(),
                 content: subject.to_string(),
                 status: "pending".to_string(),
             });
-            Some(tasks)
-        }
-        // PostToolUse TaskCreate: fill in real ID from tool_response
-        ("PostToolUse", "TaskCreate") => {
-            let resp = payload.tool_response.as_ref()?;
-            let real_id = resp.get("task")?.get("id")?.as_str()?;
-            let mut tasks = existing_tasks.to_vec();
-            // Update the last task with empty ID
-            if let Some(task) = tasks.iter_mut().rev().find(|t| t.id.is_empty()) {
-                task.id = real_id.to_string();
-                Some(tasks)
-            } else {
-                None
-            }
+            true
         }
         // PreToolUse TaskUpdate: update status/subject by ID
         ("PreToolUse", "TaskUpdate") => {
-            let input = payload.tool_input.as_ref()?;
-            let task_id = input.get("taskId")?.as_str()?;
+            let input = match payload.tool_input.as_ref() {
+                Some(v) => v,
+                None => return false,
+            };
+            let task_id = match input.get("taskId").and_then(|v| v.as_str()) {
+                Some(id) => id,
+                None => return false,
+            };
             let new_status = input.get("status").and_then(|v| v.as_str());
             let new_subject = input.get("subject").and_then(|v| v.as_str());
 
             if new_status.is_none() && new_subject.is_none() {
-                return None;
+                return false;
             }
-
-            let mut tasks = existing_tasks.to_vec();
 
             // Handle deletion
             if new_status == Some("deleted") {
-                let before = tasks.len();
-                tasks.retain(|t| t.id != task_id);
-                return if tasks.len() != before { Some(tasks) } else { None };
+                let before = existing_tasks.len();
+                existing_tasks.retain(|t| t.id != task_id);
+                return existing_tasks.len() != before;
             }
 
-            if let Some(task) = tasks.iter_mut().find(|t| t.id == task_id) {
+            if let Some(task) = existing_tasks.iter_mut().find(|t| t.id == task_id) {
                 if let Some(s) = new_status {
                     task.status = s.to_string();
                 }
                 if let Some(s) = new_subject {
                     task.content = s.to_string();
                 }
-                Some(tasks)
+                true
             } else {
-                None
+                false
             }
         }
-        _ => None,
+        _ => false,
     }
 }
 
@@ -344,7 +345,7 @@ pub fn update_session(
     is_dangerous: bool,
     git_branch: Option<String>,
     user_message: Option<String>,
-    tasks: Option<Vec<SessionTask>>,
+    payload: &HookPayload,
     data_dir: &str,
 ) -> Result<String> {
     let mut store = read_session_store(data_dir);
@@ -420,10 +421,9 @@ pub fn update_session(
         existing.and_then(|s| s.last_user_message_at.clone())
     };
 
-    // Tasks: update on TodoWrite, preserve otherwise
-    let final_tasks = tasks.unwrap_or_else(|| {
-        existing.map(|s| s.tasks.clone()).unwrap_or_default()
-    });
+    // Tasks: apply TaskCreate/TaskUpdate mutations in-place (no extra file read)
+    let mut final_tasks = existing.map(|s| s.tasks.clone()).unwrap_or_default();
+    apply_task_event(event_name, payload, &mut final_tasks);
 
     store.sessions.insert(
         session_id.to_string(),
@@ -568,6 +568,19 @@ mod tests {
         assert_eq!(determine_status("Unknown", None, "running"), "running");
     }
 
+    /// Helper: create a dummy HookPayload for tests
+    fn empty_payload(session_id: &str) -> HookPayload {
+        HookPayload {
+            session_id: session_id.to_string(),
+            cwd: None,
+            notification_type: None,
+            tool_name: None,
+            tool_input: None,
+            tool_response: None,
+            prompt: None,
+        }
+    }
+
     // ====================================================================
     // update_session tests (TTY dedup, 24h cleanup, status)
     // ====================================================================
@@ -590,7 +603,7 @@ mod tests {
             false,
             None,
             None,
-            None,
+            &empty_payload("new-session"),
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -625,7 +638,7 @@ mod tests {
             false,
             None,
             None,
-            None,
+            &empty_payload("new-session"),
             dir.path().to_str().unwrap(),
         )
         .unwrap();
@@ -640,73 +653,34 @@ mod tests {
     #[test]
     fn test_update_session_returns_correct_status() {
         let dir = setup_store(vec![]);
+        let p = empty_payload("sess-1");
 
         let status = update_session(
-            "UserPromptSubmit",
-            "sess-1",
-            "/tmp/proj",
-            "/dev/ttys001",
-            None,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
+            "UserPromptSubmit", "sess-1", "/tmp/proj", "/dev/ttys001",
+            None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
-        )
-        .unwrap();
+        ).unwrap();
         assert_eq!(status, "running");
 
         let status = update_session(
-            "Stop",
-            "sess-1",
-            "/tmp/proj",
-            "/dev/ttys001",
-            None,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
+            "Stop", "sess-1", "/tmp/proj", "/dev/ttys001",
+            None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
-        )
-        .unwrap();
+        ).unwrap();
         assert_eq!(status, "stopped");
 
         let status = update_session(
-            "PreToolUse",
-            "sess-1",
-            "/tmp/proj",
-            "/dev/ttys001",
-            None,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
+            "PreToolUse", "sess-1", "/tmp/proj", "/dev/ttys001",
+            None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
-        )
-        .unwrap();
+        ).unwrap();
         assert_eq!(status, "stopped");
 
         let status = update_session(
-            "UserPromptSubmit",
-            "sess-1",
-            "/tmp/proj",
-            "/dev/ttys001",
-            None,
-            false,
-            None,
-            false,
-            None,
-            None,
-            None,
+            "UserPromptSubmit", "sess-1", "/tmp/proj", "/dev/ttys001",
+            None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
-        )
-        .unwrap();
+        ).unwrap();
         assert_eq!(status, "running");
     }
 
@@ -728,7 +702,7 @@ mod tests {
             false,
             None,
             None,
-            None,
+            &empty_payload("new-session"),
             dir.path().to_str().unwrap(),
         )
         .unwrap();
