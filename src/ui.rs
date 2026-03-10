@@ -319,10 +319,15 @@ pub fn render_session_card(frame: &mut Frame, sess: &SessionItem, is_selected: b
         remaining -= 1;
     }
 
-    // Extra lines (dock mode has more space): show tasks
-    for task in sess.tasks.iter().take(remaining) {
+    // Extra lines (dock mode has more space): show active tasks (in_progress first, then pending)
+    let active_tasks: Vec<_> = sess.tasks.iter()
+        .filter(|t| t.status != "completed" && t.status != "deleted")
+        .collect();
+    // Sort: in_progress before pending
+    let mut sorted_tasks = active_tasks;
+    sorted_tasks.sort_by_key(|t| if t.status == "in_progress" { 0 } else { 1 });
+    for task in sorted_tasks.iter().take(remaining) {
         let (icon, color) = match task.status.as_str() {
-            "completed" => ("✓", Color::Green),
             "in_progress" => ("●", Color::Cyan),
             _ => ("○", Color::DarkGray),
         };
