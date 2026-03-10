@@ -1,6 +1,6 @@
 [package]
 name = "wez-sidebar"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "WezTerm sidebar/dock for real-time Claude Code session monitoring"
 authors = ["kok1eee"]
@@ -14,9 +14,6 @@ categories = ["command-line-utilities"]
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
 
 # File watching
 notify = "7"

@@ -41,8 +41,9 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
     let user_message = if event_name == "UserPromptSubmit" {
         payload.prompt.as_deref().map(|p| {
             let trimmed = p.trim();
-            if trimmed.len() > 200 {
-                format!("{}…", &trimmed[..199])
+            if trimmed.chars().count() > 200 {
+                let end = trimmed.char_indices().nth(200).map(|(i, _)| i).unwrap_or(trimmed.len());
+                format!("{}…", &trimmed[..end])
             } else {
                 trimmed.to_string()
             }
@@ -106,8 +107,9 @@ fn extract_activity(event_name: &str, payload: &HookPayload) -> Option<String> {
             .and_then(|v| v.as_str())
             .map(|cmd| {
                 let short = cmd.split_whitespace().take(6).collect::<Vec<_>>().join(" ");
-                if short.len() > 60 {
-                    format!("{}…", &short[..59])
+                if short.chars().count() > 60 {
+                    let end = short.char_indices().nth(60).map(|(i, _)| i).unwrap_or(short.len());
+                    format!("{}…", &short[..end])
                 } else {
                     short
                 }

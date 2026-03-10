@@ -23,7 +23,11 @@ pub fn write_session_store(store: &SessionsFile, data_dir: &str) -> Result<()> {
         fs::create_dir_all(dir)?;
     }
     let data = serde_json::to_string_pretty(store)?;
-    fs::write(path, data)?;
+
+    // Atomic write: write to temp file then rename to avoid corruption from concurrent hooks
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, data)?;
+    fs::rename(&tmp_path, &path)?;
     Ok(())
 }
 
