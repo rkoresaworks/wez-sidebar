@@ -3,6 +3,7 @@ mod config;
 mod dock;
 mod hooks;
 mod init;
+mod reaper;
 mod session;
 mod types;
 mod ui;
@@ -14,6 +15,7 @@ use clap::{Parser, Subcommand};
 use crate::config::load_config;
 use crate::dock::run_dock;
 use crate::hooks::handle_hook;
+use crate::reaper::reap_orphans;
 use crate::session::{get_wezterm_panes, load_sessions_data};
 use crate::ui::run_tui;
 
@@ -38,6 +40,12 @@ enum Commands {
     Init,
     /// Print diagnostic info for debugging
     Diag,
+    /// Clean up orphaned Claude Code processes
+    Reap {
+        /// Dry run: list orphans without killing
+        #[arg(long)]
+        dry: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -70,6 +78,22 @@ fn main() -> Result<()> {
             println!("\nloaded sessions: {}", sessions.len());
             for s in &sessions {
                 println!("  {} tab={} pane={} status={} dc={} stale={}", s.name, s.tab_id, s.pane_id, s.status, s.is_disconnected, s.is_stale);
+            }
+        }
+        Some(Commands::Reap { dry }) => {
+            let label = if dry { "[DRY RUN] " } else { "" };
+            let reaped = reap_orphans(&config, dry);
+            if reaped.is_empty() {
+                println!("{}No orphaned Claude Code processes found.", label);
+            } else {
+                println!("{}Found {} orphan(s):", label, reaped.len());
+                for p in &reaped {
+                    let action = if dry { "would kill" } else { "killed" };
+                    println!(
+                        "  {} PID={} PGID={} TTY={} elapsed={} {}",
+                        action, p.pid, p.pgid, p.tty, p.elapsed, p.args
+                    );
+                }
             }
         }
         None => {

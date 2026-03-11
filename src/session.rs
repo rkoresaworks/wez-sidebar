@@ -144,7 +144,15 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
         if sess.tty.is_empty() {
             continue;
         }
-        let pane = tty_to_pane.get(&sess.tty);
+        // Match by TTY, then verify pane_id (prevents TTY reuse false match)
+        let pane = tty_to_pane.get(&sess.tty).filter(|p| {
+            match sess.pane_id {
+                Some(recorded_pane_id) => p.pane_id == recorded_pane_id,
+                // No pane_id recorded: trust TTY only for non-stopped sessions
+                // (stopped sessions won't fire hooks to record pane_id, so TTY reuse is likely)
+                None => sess.status != "stopped",
+            }
+        });
         let name = std::path::Path::new(&sess.home_cwd)
             .file_name()
             .map(|s| s.to_string_lossy().to_string())

@@ -7,6 +7,24 @@ pub struct AppConfig {
     pub wezterm_path: String,
     pub stale_threshold_mins: i64,
     pub data_dir: String,
+    #[serde(default)]
+    pub reaper: ReaperConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ReaperConfig {
+    pub enabled: bool,
+    pub threshold_hours: i64,
+}
+
+impl Default for ReaperConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold_hours: 3,
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -28,6 +46,7 @@ impl Default for AppConfig {
             wezterm_path,
             stale_threshold_mins: 30,
             data_dir: "~/.config/wez-sidebar".to_string(),
+            reaper: ReaperConfig::default(),
         }
     }
 }

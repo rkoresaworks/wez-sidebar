@@ -22,6 +22,7 @@ use std::{
 
 use crate::app::App;
 use crate::config::AppConfig;
+use crate::reaper::reap_orphans;
 use crate::session::{
     activate_pane, delete_session, get_sessions_file_path,
     load_sessions_data,
@@ -274,6 +275,10 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(AppEvent::Tick) => {
                 app.tick = app.tick.wrapping_add(1);
+                // Reap orphaned claude processes every 5 minutes
+                if app.config.reaper.enabled && app.tick.is_multiple_of(300) {
+                    reap_orphans(&app.config, false);
+                }
             }
             Ok(AppEvent::Key(key)) => {
                 if app.show_help {

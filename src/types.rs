@@ -37,6 +37,8 @@ pub struct Session {
     pub tasks: Vec<SessionTask>,
     #[serde(default)]
     pub subagents: Vec<SubagentEntry>,
+    #[serde(default)]
+    pub pane_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

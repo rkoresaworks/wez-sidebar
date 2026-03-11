@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::config::AppConfig;
-use crate::session::{read_session_store, send_permission_notification, write_session_store};
+use crate::session::{find_wezterm_pane_by_tty, read_session_store, send_permission_notification, write_session_store};
 use crate::types::{HookPayload, Session, SessionTask};
 use crate::usage::cache_usage_if_stale;
 
@@ -25,6 +25,8 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
         Ok(p) => p,
         Err(_) => return Ok(()),
     };
+
+
 
     if payload.session_id.is_empty() {
         return Ok(());
@@ -58,6 +60,9 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
         None
     };
 
+    // Resolve pane_id from TTY
+    let pane_id = find_wezterm_pane_by_tty(&tty, &config.wezterm_path).map(|(_, pid)| pid);
+
     // Update session
     let cwd = payload.cwd.clone().unwrap_or_default();
     let git_branch = resolve_git_branch(&cwd);
@@ -67,6 +72,7 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
         &payload.session_id,
         &cwd,
         &tty,
+        pane_id,
         notification_type,
         is_yolo,
         activity,
@@ -385,6 +391,7 @@ pub fn update_session(
     session_id: &str,
     cwd: &str,
     tty: &str,
+    pane_id: Option<i32>,
     notification_type: Option<&str>,
     is_yolo: bool,
     activity: Option<String>,
@@ -471,6 +478,9 @@ pub fn update_session(
     let mut final_tasks = existing.map(|s| s.tasks.clone()).unwrap_or_default();
     apply_task_event(event_name, payload, &mut final_tasks);
 
+    // pane_id: update if resolved, otherwise preserve existing
+    let final_pane_id = pane_id.or_else(|| existing.and_then(|s| s.pane_id));
+
     store.sessions.insert(
         session_id.to_string(),
         Session {
@@ -488,6 +498,7 @@ pub fn update_session(
             last_user_message_at: final_user_message_at,
             tasks: final_tasks,
             subagents: existing.map(|s| s.subagents.clone()).unwrap_or_default(),
+            pane_id: final_pane_id,
         },
     );
 
@@ -524,6 +535,7 @@ mod tests {
             last_user_message_at: None,
             tasks: Vec::new(),
             subagents: Vec::new(),
+            pane_id: None,
         }
     }
 
@@ -645,6 +657,7 @@ mod tests {
             "new-session",
             "/tmp/project",
             "/dev/ttys001",
+            None, // pane_id
             None,
             false,
             None,
@@ -680,6 +693,7 @@ mod tests {
             "new-session",
             "/tmp/project",
             "/dev/ttys005",
+            None, // pane_id
             None,
             false,
             None,
@@ -705,28 +719,28 @@ mod tests {
 
         let status = update_session(
             "UserPromptSubmit", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, false, None, false, None, None, &p,
+            None, None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "running");
 
         let status = update_session(
             "Stop", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, false, None, false, None, None, &p,
+            None, None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "stopped");
 
         let status = update_session(
             "PreToolUse", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, false, None, false, None, None, &p,
+            None, None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "stopped");
 
         let status = update_session(
             "UserPromptSubmit", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, false, None, false, None, None, &p,
+            None, None, false, None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "running");
@@ -744,6 +758,7 @@ mod tests {
             "new-session",
             "/tmp/project",
             "",
+            None, // pane_id
             None,
             false,
             None,

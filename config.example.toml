@@ -23,3 +23,16 @@ wezterm_path = "/opt/homebrew/bin/wezterm"
 #
 # - Clicking the notification body -> focuses the WezTerm pane
 # - If terminal-notifier is not installed, notifications are silently skipped.
+
+# --------------------------------------------------------------------------
+# Orphan Process Reaper
+# --------------------------------------------------------------------------
+# Automatically kills orphaned Claude Code processes that are no longer
+# attached to any WezTerm pane and have been running longer than the threshold.
+#
+# Safety: skipped when WezTerm is not running; uses SIGTERM only (no SIGKILL).
+# Manual use: wez-sidebar reap --dry (preview) / wez-sidebar reap (kill)
+#
+# [reaper]
+# enabled = false
+# threshold_hours = 3
