@@ -221,10 +221,11 @@ fn apply_task_event(
     }
 }
 
-/// Merge subagent task events into the most recently updated running parent session.
-/// Non-task events from subagents are silently ignored (prevents ghost sessions).
+/// Handle subagent hooks: track active subagents and merge task events into parent session.
+/// Non-task events still update the subagent's last_seen for counting.
 fn merge_subagent_tasks(event_name: &str, payload: &HookPayload, data_dir: &str) -> Result<()> {
     let mut store = read_session_store(data_dir);
+    let now = chrono::Utc::now().to_rfc3339();
 
     // Find the most recently updated running session with a TTY (= parent)
     let parent_id = store
@@ -240,11 +241,22 @@ fn merge_subagent_tasks(event_name: &str, payload: &HookPayload, data_dir: &str)
     };
 
     if let Some(parent) = store.sessions.get_mut(&parent_id) {
-        if apply_task_event(event_name, payload, &mut parent.tasks) {
-            parent.updated_at = chrono::Utc::now().to_rfc3339();
-            store.updated_at = parent.updated_at.clone();
-            write_session_store(&store, data_dir)?;
+        // Upsert subagent entry
+        if let Some(entry) = parent.subagents.iter_mut().find(|e| e.session_id == payload.session_id) {
+            entry.last_seen = now.clone();
+        } else {
+            parent.subagents.push(crate::types::SubagentEntry {
+                session_id: payload.session_id.clone(),
+                last_seen: now.clone(),
+            });
         }
+
+        // Merge task events
+        apply_task_event(event_name, payload, &mut parent.tasks);
+
+        parent.updated_at = now;
+        store.updated_at = parent.updated_at.clone();
+        write_session_store(&store, data_dir)?;
     }
     Ok(())
 }
@@ -475,6 +487,7 @@ pub fn update_session(
             last_user_message: final_user_message,
             last_user_message_at: final_user_message_at,
             tasks: final_tasks,
+            subagents: existing.map(|s| s.subagents.clone()).unwrap_or_default(),
         },
     );
 
@@ -510,6 +523,7 @@ mod tests {
             last_user_message: None,
             last_user_message_at: None,
             tasks: Vec::new(),
+            subagents: Vec::new(),
         }
     }
 

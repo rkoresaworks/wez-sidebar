@@ -35,6 +35,14 @@ pub struct Session {
     pub last_user_message_at: Option<String>,
     #[serde(default)]
     pub tasks: Vec<SessionTask>,
+    #[serde(default)]
+    pub subagents: Vec<SubagentEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentEntry {
+    pub session_id: String,
+    pub last_seen: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -65,6 +73,7 @@ pub struct SessionItem {
     pub last_user_message: Option<String>,
     pub last_user_message_at: Option<DateTime<Utc>>,
     pub tasks: Vec<SessionTask>,
+    pub active_subagents: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

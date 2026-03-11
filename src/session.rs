@@ -158,6 +158,13 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
             .unwrap_or(now);
         let is_stale = now.signed_duration_since(updated_at) > stale_threshold;
 
+        // Count subagents active within the last 60 seconds
+        let active_subagents = sess.subagents.iter().filter(|e| {
+            DateTime::parse_from_rfc3339(&e.last_seen)
+                .map(|dt| now.signed_duration_since(dt.with_timezone(&Utc)) < chrono::Duration::seconds(60))
+                .unwrap_or(false)
+        }).count();
+
         if let Some(pane) = pane {
             if pane.window_id != current_window_id {
                 continue;
@@ -184,6 +191,7 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                 last_user_message: sess.last_user_message.clone(),
                 last_user_message_at,
                 tasks: sess.tasks.clone(),
+                active_subagents,
             });
         } else {
             // Disconnected session
@@ -211,6 +219,7 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                     last_user_message: sess.last_user_message.clone(),
                     last_user_message_at,
                     tasks: sess.tasks.clone(),
+                    active_subagents,
                 });
             }
         }

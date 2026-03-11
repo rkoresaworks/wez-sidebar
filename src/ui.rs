@@ -256,16 +256,27 @@ pub fn render_session_card(frame: &mut Frame, sess: &SessionItem, is_selected: b
     }
     lines.push(Line::from(line1_spans));
 
-    // Line 2: last activity (red if dangerous) or status hint
+    // Line 2: last activity (red if dangerous) or status hint + subagent count
+    let subagent_suffix = if sess.active_subagents > 0 {
+        format!(" {}agents", sess.active_subagents)
+    } else {
+        String::new()
+    };
+    let suffix_w = unicode_width::UnicodeWidthStr::width(subagent_suffix.as_str());
+
     if let Some(ref activity) = sess.last_activity {
         let color = if sess.is_dangerous { Color::Red } else { Color::Cyan };
         let prefix = if sess.is_dangerous { " ⚠ " } else { " " };
         let prefix_w = if sess.is_dangerous { 4 } else { 1 };
-        let max_len = inner_w.saturating_sub(prefix_w);
-        lines.push(Line::from(Span::styled(
+        let max_len = inner_w.saturating_sub(prefix_w + suffix_w);
+        let mut spans = vec![Span::styled(
             format!("{}{}", prefix, truncate_name(activity, max_len)),
             Style::default().fg(color),
-        )));
+        )];
+        if !subagent_suffix.is_empty() {
+            spans.push(Span::styled(subagent_suffix.clone(), Style::default().fg(Color::Blue)));
+        }
+        lines.push(Line::from(spans));
     } else if sess.is_disconnected {
         lines.push(Line::from(Span::styled(
             " disconnected",
@@ -275,6 +286,11 @@ pub fn render_session_card(frame: &mut Frame, sess: &SessionItem, is_selected: b
         lines.push(Line::from(Span::styled(
             " stale",
             Style::default().fg(Color::DarkGray),
+        )));
+    } else if !subagent_suffix.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", subagent_suffix.trim()),
+            Style::default().fg(Color::Blue),
         )));
     } else {
         lines.push(Line::from(""));
