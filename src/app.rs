@@ -3,10 +3,12 @@ use std::time::Instant;
 use ratatui::widgets::ListState;
 
 use crate::config::AppConfig;
+use crate::terminal::{create_backend, TerminalBackend};
 use crate::types::{SessionItem, UsageLimits};
 
 pub struct App {
     pub config: AppConfig,
+    pub backend: Box<dyn TerminalBackend>,
     pub sessions: Vec<SessionItem>,
     pub session_state: ListState,
     pub usage: UsageLimits,
@@ -25,8 +27,11 @@ impl App {
         let mut session_state = ListState::default();
         session_state.select(Some(0));
 
+        let backend = create_backend(&config.backend, config.effective_terminal_path());
+
         Self {
             config,
+            backend,
             sessions: Vec::new(),
             session_state,
             usage: UsageLimits {

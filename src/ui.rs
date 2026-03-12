@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Utc};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
@@ -25,7 +25,7 @@ use crate::app::App;
 use crate::config::AppConfig;
 use crate::reaper::reap_orphans;
 use crate::session::{
-    activate_pane, delete_session, get_pane_text, get_sessions_file_path,
+    activate_pane, delete_session, get_sessions_file_path,
     load_sessions_data,
 };
 use crate::types::{AppEvent, SessionItem};
@@ -40,78 +40,31 @@ fn ui(frame: &mut Frame, app: &mut App) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(5),  // Usage
                 Constraint::Min(5),    // Sessions
                 Constraint::Length(12), // Preview
                 Constraint::Length(1),  // Status bar
             ])
             .split(frame.area());
 
-        render_usage(frame, app, chunks[0]);
-        render_sessions(frame, app, chunks[1]);
-        render_preview(frame, app, chunks[2]);
-        render_status_bar(frame, app, chunks[3]);
+        render_sessions(frame, app, chunks[0]);
+        render_preview(frame, app, chunks[1]);
+        render_status_bar(frame, app, chunks[2]);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(5), // Usage
                 Constraint::Min(10),   // Sessions
                 Constraint::Length(1), // Status bar
             ])
             .split(frame.area());
 
-        render_usage(frame, app, chunks[0]);
-        render_sessions(frame, app, chunks[1]);
-        render_status_bar(frame, app, chunks[2]);
+        render_sessions(frame, app, chunks[0]);
+        render_status_bar(frame, app, chunks[1]);
     }
 
     if app.show_help {
         render_help_popup(frame);
     }
-}
-
-fn render_usage(frame: &mut Frame, app: &App, area: Rect) {
-    let now = Local::now();
-    let time_str = now.format("%H:%M:%S").to_string();
-
-    let mut lines = vec![Line::from(format!(" 🕐 {}", time_str))];
-
-    if app.usage.five_hour >= 0 {
-        let color = if app.usage.five_hour >= 80 {
-            Color::Red
-        } else if app.usage.five_hour >= 50 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-        let mut text = format!(" ⏳ 5h: {}%", app.usage.five_hour);
-        if !app.usage.five_hour_reset.is_empty() {
-            text.push_str(&format!(" ({})", app.usage.five_hour_reset));
-        }
-        lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
-    }
-
-    if app.usage.weekly >= 0 {
-        let color = if app.usage.weekly >= 80 {
-            Color::Red
-        } else if app.usage.weekly >= 50 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
-        let mut text = format!(" 📅 All: {}%", app.usage.weekly);
-        if !app.usage.weekly_reset.is_empty() {
-            text.push_str(&format!(" ({})", app.usage.weekly_reset));
-        }
-        lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" 📊 Usage ");
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
 }
 
 fn render_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -186,8 +139,10 @@ pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', 
 pub fn render_session_card(frame: &mut Frame, sess: &SessionItem, is_selected: bool, tick: u32, area: Rect) {
     let marker = if sess.is_disconnected {
         "⚫"
-    } else if sess.is_yolo {
+    } else if sess.permission_mode == "yolo" {
         "🤖"
+    } else if sess.permission_mode == "auto" {
+        "⚡"
     } else if sess.is_current {
         "🟢"
     } else {
@@ -240,13 +195,45 @@ pub fn render_session_card(frame: &mut Frame, sess: &SessionItem, is_selected: b
     let duration = format_duration(&sess.created_at);
     let mut lines = Vec::new();
 
-    // Line 1: duration + git branch
+    // Line 1: duration + context bar + git branch
     let mut line1_spans = vec![Span::styled(
         format!(" {}", duration),
         Style::default().fg(Color::DarkGray),
     )];
+    let ctx_display_len = if let Some(pct) = sess.context_percent {
+        let bar_w = 8;
+        let filled = ((pct as usize) * bar_w / 100).min(bar_w);
+        let empty = bar_w - filled;
+        let bar_color = if pct >= 80 {
+            Color::Red
+        } else if pct >= 50 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+        let label = format!(" {}%", pct);
+        line1_spans.push(Span::styled(
+            " ".to_string(),
+            Style::default(),
+        ));
+        line1_spans.push(Span::styled(
+            "█".repeat(filled),
+            Style::default().fg(bar_color),
+        ));
+        line1_spans.push(Span::styled(
+            "░".repeat(empty),
+            Style::default().fg(Color::DarkGray),
+        ));
+        line1_spans.push(Span::styled(
+            label.clone(),
+            Style::default().fg(Color::DarkGray),
+        ));
+        1 + bar_w + label.len() // " " + bar + label
+    } else {
+        0
+    };
     if let Some(ref branch) = sess.git_branch {
-        let used = duration.len() + 2; // " " prefix + duration
+        let used = duration.len() + ctx_display_len + 2;
         let max_branch = inner_w.saturating_sub(used + 2);
         if max_branch > 3 {
             line1_spans.push(Span::styled(
@@ -425,7 +412,10 @@ pub fn format_usage_spans(app: &App) -> Vec<Span<'static>> {
         } else {
             Color::Green
         };
-        let text = format!("📅{}%", app.usage.weekly);
+        let mut text = format!("📅{}%", app.usage.weekly);
+        if !app.usage.weekly_reset.is_empty() {
+            text.push_str(&format!("(~{})", app.usage.weekly_reset));
+        }
         spans.push(Span::styled(text, Style::default().fg(color)));
         spans.push(Span::raw(" "));
     }
@@ -515,7 +505,7 @@ fn update_preview(app: &mut App) {
     if let Some(idx) = app.session_state.selected() {
         if idx < visible.len() {
             let pane_id = visible[idx].pane_id;
-            app.pane_preview = get_pane_text(pane_id, &app.config.wezterm_path);
+            app.pane_preview = app.backend.get_pane_text(pane_id);
             app.preview_scroll = app.pane_preview.len().saturating_sub(1) as u16;
         } else {
             app.pane_preview.clear();
@@ -541,7 +531,7 @@ fn handle_key(app: &mut App, key: event::KeyEvent) {
             }
         }
         KeyCode::Char('r') => {
-            app.sessions = load_sessions_data(&app.config);
+            app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
             app.usage = load_usage_from_cache(&app.config.data_dir);
         }
         KeyCode::Char('d') => {
@@ -549,7 +539,7 @@ fn handle_key(app: &mut App, key: event::KeyEvent) {
             if let Some(idx) = app.session_state.selected() {
                 if idx < visible.len() {
                     delete_session(visible[idx], &app.config.data_dir);
-                    app.sessions = load_sessions_data(&app.config);
+                    app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
                 }
             }
         }
@@ -572,7 +562,7 @@ fn handle_key(app: &mut App, key: event::KeyEvent) {
             let visible = app.visible_sessions();
             if let Some(idx) = app.session_state.selected() {
                 if idx < visible.len() {
-                    activate_pane(visible[idx], &app.config.wezterm_path);
+                    activate_pane(visible[idx], app.backend.as_ref());
                 }
             }
         }
@@ -582,7 +572,7 @@ fn handle_key(app: &mut App, key: event::KeyEvent) {
             let visible: Vec<SessionItem> = app.visible_sessions().into_iter().cloned().collect();
             if idx < visible.len() {
                 app.session_state.select(Some(idx));
-                activate_pane(&visible[idx], &app.config.wezterm_path);
+                activate_pane(&visible[idx], app.backend.as_ref());
             }
         }
         _ => {}
@@ -601,7 +591,7 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(config);
-    app.sessions = load_sessions_data(&app.config);
+    app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
@@ -693,7 +683,7 @@ pub fn run_tui(config: AppConfig) -> Result<()> {
                 }
             }
             Ok(AppEvent::SessionsUpdated) => {
-                app.sessions = load_sessions_data(&app.config);
+                app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
                 app.auto_jump_to_waiting();
             }
             Ok(AppEvent::UsageUpdated(usage)) => {

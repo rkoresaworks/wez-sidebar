@@ -2,8 +2,11 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::{collections::HashMap, fs, path::PathBuf, process::Command};
 
+use std::process::Stdio;
+
 use crate::config::{expand_tilde, AppConfig};
-use crate::types::{SessionItem, SessionsFile, WezTermPane};
+use crate::terminal::{TerminalBackend, TerminalPane};
+use crate::types::{SessionItem, SessionsFile};
 
 pub fn get_sessions_file_path(data_dir: &str) -> PathBuf {
     expand_tilde(data_dir).join("sessions.json")
@@ -31,32 +34,11 @@ pub fn write_session_store(store: &SessionsFile, data_dir: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn get_wezterm_panes(wezterm_path: &str) -> Vec<WezTermPane> {
-    let output = Command::new(wezterm_path)
-        .args(["cli", "list", "--format", "json"])
-        .output();
-
-    match output {
-        Ok(out) => serde_json::from_slice(&out.stdout).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    }
-}
-
-pub fn find_wezterm_pane_by_tty(tty: &str, wezterm_path: &str) -> Option<(i32, i32)> {
-    if tty.is_empty() {
-        return None;
-    }
-    let panes = get_wezterm_panes(wezterm_path);
-    panes
-        .iter()
-        .find(|p| p.tty_name == tty)
-        .map(|p| (p.tab_id, p.pane_id))
-}
-
-pub fn send_permission_notification(cwd: &str, tty: &str, wezterm_path: &str) {
+pub fn send_permission_notification(cwd: &str, tty: &str, backend: &dyn TerminalBackend) {
     // terminal-notifier が存在しなければスキップ
     let notifier = match Command::new("which")
         .arg("terminal-notifier")
+        .stderr(Stdio::null())
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -72,21 +54,14 @@ pub fn send_permission_notification(cwd: &str, tty: &str, wezterm_path: &str) {
         .unwrap_or("unknown")
         .to_string();
 
-    let (activate_cmd, approve_cmd) = match find_wezterm_pane_by_tty(tty, wezterm_path) {
-        Some((tab_id, pane_id)) => {
-            let activate = format!(
-                "{} cli activate-tab --tab-id {} && {} cli activate-pane --pane-id {}",
-                wezterm_path, tab_id, wezterm_path, pane_id
-            );
-            let approve = format!(
-                "{} && {} cli send-text --pane-id {} --no-paste $'\\n'",
-                activate, wezterm_path, pane_id
-            );
-            (activate, approve)
-        }
+    let (activate_cmd, approve_cmd) = match backend.find_pane_by_tty(tty) {
+        Some((tab_id, pane_id)) => (
+            backend.build_activate_command(tab_id, pane_id),
+            backend.build_approve_command(tab_id, pane_id),
+        ),
         None => (
-            "open -a WezTerm".to_string(),
-            "open -a WezTerm".to_string(),
+            format!("open -a {}", capitalize(backend.name())),
+            format!("open -a {}", capitalize(backend.name())),
         ),
     };
 
@@ -95,24 +70,35 @@ pub fn send_permission_notification(cwd: &str, tty: &str, wezterm_path: &str) {
         notifier, dir_name, approve_cmd, activate_cmd
     );
 
-    let _ = Command::new("bash").args(["-c", &script]).spawn();
+    let _ = Command::new("bash")
+        .args(["-c", &script])
+        .stderr(Stdio::null())
+        .spawn();
 }
 
-pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
-    let panes = get_wezterm_panes(&config.wezterm_path);
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+pub fn load_sessions_data(config: &AppConfig, backend: &dyn TerminalBackend) -> Vec<SessionItem> {
+    let panes = backend.list_panes();
     if panes.is_empty() {
         return Vec::new();
     }
 
     // Build TTY to pane map
-    let mut tty_to_pane: HashMap<String, &WezTermPane> = HashMap::new();
-    let own_pane_env = std::env::var("WEZTERM_PANE").unwrap_or_default();
+    let mut tty_to_pane: HashMap<String, &TerminalPane> = HashMap::new();
+    let own_pane_id = backend.current_pane_id();
     let mut current_window_id = -1;
     let mut current_pane_id = -1;
 
     for pane in &panes {
         tty_to_pane.insert(pane.tty_name.clone(), pane);
-        if !own_pane_env.is_empty() && pane.pane_id.to_string() == own_pane_env {
+        if own_pane_id >= 0 && pane.pane_id == own_pane_id {
             current_window_id = pane.window_id;
         }
     }
@@ -191,7 +177,13 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                 is_stale,
                 session_id: sess.session_id.clone(),
                 is_disconnected: false,
-                is_yolo: sess.is_yolo,
+                permission_mode: if !sess.permission_mode.is_empty() {
+                    sess.permission_mode.clone()
+                } else if sess.is_yolo {
+                    "yolo".to_string()
+                } else {
+                    "normal".to_string()
+                },
                 last_activity: sess.last_activity.clone(),
                 is_dangerous: sess.is_dangerous,
                 git_branch: sess.git_branch.clone(),
@@ -200,6 +192,7 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                 last_user_message_at,
                 tasks: sess.tasks.clone(),
                 active_subagents,
+                context_percent: sess.context_percent,
             });
         } else {
             // Disconnected session
@@ -219,7 +212,13 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                     is_stale,
                     session_id: sess.session_id.clone(),
                     is_disconnected: true,
-                    is_yolo: sess.is_yolo,
+                    permission_mode: if !sess.permission_mode.is_empty() {
+                        sess.permission_mode.clone()
+                    } else if sess.is_yolo {
+                        "yolo".to_string()
+                    } else {
+                        "normal".to_string()
+                    },
                     last_activity: sess.last_activity.clone(),
                     is_dangerous: sess.is_dangerous,
                     git_branch: sess.git_branch.clone(),
@@ -228,6 +227,7 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
                     last_user_message_at,
                     tasks: sess.tasks.clone(),
                     active_subagents,
+                    context_percent: sess.context_percent,
                 });
             }
         }
@@ -247,45 +247,11 @@ pub fn load_sessions_data(config: &AppConfig) -> Vec<SessionItem> {
     sessions
 }
 
-pub fn get_pane_text(pane_id: i32, wezterm_path: &str) -> Vec<String> {
-    if pane_id < 0 {
-        return vec!["(disconnected)".to_string()];
-    }
-
-    let output = Command::new(wezterm_path)
-        .args(["cli", "get-text", "--pane-id", &pane_id.to_string()])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            // Trim trailing empty lines, keep last meaningful lines
-            let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-            // Find last non-empty line
-            let last_non_empty = lines.iter().rposition(|l| !l.trim().is_empty()).unwrap_or(0);
-            lines[..=last_non_empty].to_vec()
-        }
-        _ => vec!["(取得失敗)".to_string()],
-    }
-}
-
-pub fn activate_pane(session: &SessionItem, wezterm_path: &str) {
+pub fn activate_pane(session: &SessionItem, backend: &dyn TerminalBackend) {
     if session.is_disconnected {
         return;
     }
-
-    let _ = Command::new(wezterm_path)
-        .args(["cli", "activate-tab", "--tab-id", &session.tab_id.to_string()])
-        .output();
-
-    let _ = Command::new(wezterm_path)
-        .args([
-            "cli",
-            "activate-pane",
-            "--pane-id",
-            &session.pane_id.to_string(),
-        ])
-        .output();
+    backend.activate_pane(session.tab_id, session.pane_id);
 }
 
 pub fn delete_session(session: &SessionItem, data_dir: &str) {

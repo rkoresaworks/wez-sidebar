@@ -1,8 +1,8 @@
 use std::collections::HashSet;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::config::AppConfig;
-use crate::session::get_wezterm_panes;
+use crate::terminal::create_backend;
 
 #[derive(Debug, Clone)]
 pub struct ReapedProcess {
@@ -45,6 +45,7 @@ fn list_claude_processes() -> Vec<(u32, u32, String, String, String)> {
     // pid, pgid, tty, etime, args
     let output = Command::new("ps")
         .args(["-eo", "pid,pgid,tty,etime,args"])
+        .stderr(Stdio::null())
         .output();
 
     let output = match output {
@@ -136,14 +137,15 @@ fn normalize_tty(tty: &str) -> String {
 
 /// Detect and optionally kill orphaned Claude Code processes
 pub fn reap_orphans(config: &AppConfig, dry_run: bool) -> Vec<ReapedProcess> {
-    let panes = get_wezterm_panes(&config.wezterm_path);
+    let backend = create_backend(&config.backend, config.effective_terminal_path());
+    let panes = backend.list_panes();
 
-    // Safety: if WezTerm is not running (no panes), skip entirely
+    // Safety: if terminal is not running (no panes), skip entirely
     if panes.is_empty() {
         return Vec::new();
     }
 
-    // Collect all WezTerm pane TTYs (normalized)
+    // Collect all terminal pane TTYs (normalized)
     let pane_ttys: HashSet<String> = panes
         .iter()
         .map(|p| normalize_tty(&p.tty_name))
@@ -178,6 +180,7 @@ pub fn reap_orphans(config: &AppConfig, dry_run: bool) -> Vec<ReapedProcess> {
                 // SIGTERM only — no SIGKILL
                 let _ = Command::new("kill")
                     .args(["-TERM", &format!("-{}", pgid)])
+                    .stderr(Stdio::null())
                     .output();
             }
             killed_pgids.insert(pgid);

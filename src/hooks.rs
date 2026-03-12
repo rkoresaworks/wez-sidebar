@@ -2,11 +2,12 @@ use anyhow::Result;
 use chrono::Utc;
 use std::{
     io::{self, Read as _},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use crate::config::AppConfig;
-use crate::session::{find_wezterm_pane_by_tty, read_session_store, send_permission_notification, write_session_store};
+use crate::session::{read_session_store, send_permission_notification, write_session_store};
+use crate::terminal::create_backend;
 use crate::types::{HookPayload, Session, SessionTask};
 use crate::usage::cache_usage_if_stale;
 
@@ -14,7 +15,8 @@ pub fn handle_hook(event_name: &str, config: &AppConfig) -> Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
 
-    handle_hook_inner(event_name, config, &input)?;
+    // Swallow errors so we always output {} (prevents Claude Code "hook error")
+    let _ = handle_hook_inner(event_name, config, &input);
 
     println!("{{}}");
     Ok(())
@@ -32,13 +34,23 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
         return Ok(());
     }
 
-    // Detect TTY and yolo mode from ancestors (single walk)
-    let (tty, is_yolo) = get_tty_and_yolo_from_ancestors();
+    // Detect TTY and permission mode from ancestors (single walk)
+    let (tty, permission_mode) = get_tty_and_permission_from_ancestors();
 
-    // Subagent handling: no TTY means this is a subagent hook.
-    // Merge task events into the parent session; skip everything else.
-    if tty.is_empty() {
-        return merge_subagent_tasks(event_name, &payload, &config.data_dir);
+    // Subagent detection:
+    // 1. No TTY → headless subagent (e.g. background agent)
+    // 2. TTY exists but already belongs to a different running session → teammate/subagent
+    let is_subagent = if tty.is_empty() {
+        true
+    } else {
+        let store = read_session_store(&config.data_dir);
+        store.sessions.values().any(|s| {
+            s.tty == tty && s.session_id != payload.session_id && s.status == "running"
+        })
+    };
+
+    if is_subagent {
+        return track_subagent(&payload, &config.data_dir);
     }
 
     // Extract activity and danger flag from hook payload
@@ -61,7 +73,8 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
     };
 
     // Resolve pane_id from TTY
-    let pane_id = find_wezterm_pane_by_tty(&tty, &config.wezterm_path).map(|(_, pid)| pid);
+    let backend = create_backend(&config.backend, config.effective_terminal_path());
+    let pane_id = backend.find_pane_by_tty(&tty).map(|(_, pid)| pid);
 
     // Update session
     let cwd = payload.cwd.clone().unwrap_or_default();
@@ -74,7 +87,7 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
         &tty,
         pane_id,
         notification_type,
-        is_yolo,
+        &permission_mode,
         activity,
         is_dangerous,
         git_branch,
@@ -85,7 +98,16 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
 
     // Desktop notification on permission prompt
     if new_status == "waiting_input" {
-        send_permission_notification(&cwd, &tty, &config.wezterm_path);
+        send_permission_notification(&cwd, &tty, backend.as_ref());
+    }
+
+    // Context window usage: read from Claude Code JSONL
+    if let Some(pct) = read_context_percent(&payload.session_id, &cwd) {
+        let mut store = read_session_store(&config.data_dir);
+        if let Some(sess) = store.sessions.get_mut(&payload.session_id) {
+            sess.context_percent = Some(pct);
+            let _ = write_session_store(&store, &config.data_dir);
+        }
     }
 
     // Usage cache: 10分クールダウンで API 取得 → キャッシュファイル書き出し
@@ -227,9 +249,71 @@ fn apply_task_event(
     }
 }
 
-/// Handle subagent hooks: track active subagents and merge task events into parent session.
-/// Non-task events still update the subagent's last_seen for counting.
-fn merge_subagent_tasks(event_name: &str, payload: &HookPayload, data_dir: &str) -> Result<()> {
+/// Read context window usage percent from Claude Code's session JSONL.
+/// Reads only the tail of the file for efficiency (even if the file is many MB).
+fn read_context_percent(session_id: &str, cwd: &str) -> Option<u8> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    // Build JSONL path: ~/.claude/projects/{encoded_cwd}/{session_id}.jsonl
+    let home = dirs::home_dir()?;
+    let encoded_cwd = cwd.replace('/', "-");
+    let jsonl_path = home
+        .join(".claude/projects")
+        .join(&encoded_cwd)
+        .join(format!("{}.jsonl", session_id));
+
+    let mut file = std::fs::File::open(&jsonl_path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+
+    // Read last 16KB — enough to contain the last assistant message
+    let read_from = file_len.saturating_sub(16 * 1024);
+    file.seek(SeekFrom::Start(read_from)).ok()?;
+    let mut buf = String::new();
+    file.read_to_string(&mut buf).ok()?;
+
+    // Find the last assistant message with usage data (search from end)
+    let mut model_name = None;
+    let mut total_tokens: Option<u64> = None;
+
+    for line in buf.lines().rev() {
+        if !line.contains("\"type\":\"assistant\"") && !line.contains("\"type\": \"assistant\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+        let msg = v.get("message")?;
+        let usage = msg.get("usage")?;
+
+        let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let total = input + cache_create + cache_read;
+        if total == 0 {
+            continue;
+        }
+
+        total_tokens = Some(total);
+        model_name = msg.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+        break;
+    }
+
+    let total = total_tokens?;
+    let max_tokens = match model_name.as_deref() {
+        Some(m) if m.contains("opus") => 1_000_000u64,
+        _ => 200_000u64,
+    };
+
+    let pct = ((total * 100) / max_tokens).min(100) as u8;
+    Some(pct)
+}
+
+/// Track subagent activity by recording its session_id in the parent's subagents list.
+/// Only updates the count — no task merging.
+fn track_subagent(payload: &HookPayload, data_dir: &str) -> Result<()> {
     let mut store = read_session_store(data_dir);
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -242,15 +326,13 @@ fn merge_subagent_tasks(event_name: &str, payload: &HookPayload, data_dir: &str)
         .collect();
 
     let parent_id = if !subagent_cwd.is_empty() {
-        // Match by CWD: subagent runs in the same directory as parent
         running_sessions
             .iter()
             .filter(|s| subagent_cwd.starts_with(&s.home_cwd))
-            .max_by_key(|s| s.home_cwd.len()) // longest prefix = most specific match
+            .max_by_key(|s| s.home_cwd.len())
             .or_else(|| running_sessions.iter().max_by_key(|s| s.updated_at.as_str()))
             .map(|s| s.session_id.clone())
     } else {
-        // No CWD available: fallback to most recently updated
         running_sessions
             .iter()
             .max_by_key(|s| s.updated_at.as_str())
@@ -259,11 +341,10 @@ fn merge_subagent_tasks(event_name: &str, payload: &HookPayload, data_dir: &str)
 
     let parent_id = match parent_id {
         Some(id) => id,
-        None => return Ok(()), // No running parent found
+        None => return Ok(()),
     };
 
     if let Some(parent) = store.sessions.get_mut(&parent_id) {
-        // Upsert subagent entry
         if let Some(entry) = parent.subagents.iter_mut().find(|e| e.session_id == payload.session_id) {
             entry.last_seen = now.clone();
         } else {
@@ -272,9 +353,6 @@ fn merge_subagent_tasks(event_name: &str, payload: &HookPayload, data_dir: &str)
                 last_seen: now.clone(),
             });
         }
-
-        // Merge task events
-        apply_task_event(event_name, payload, &mut parent.tasks);
 
         parent.updated_at = now;
         store.updated_at = parent.updated_at.clone();
@@ -323,6 +401,7 @@ fn resolve_git_branch(cwd: &str) -> Option<String> {
     }
     Command::new("git")
         .args(["-C", cwd, "branch", "--show-current"])
+        .stderr(Stdio::null())
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -330,16 +409,17 @@ fn resolve_git_branch(cwd: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Walk the ancestor process chain once, collecting TTY and yolo mode in a single pass.
-/// Returns `(tty, is_yolo)`. Uses a single `ps -o tty=,ppid=,args=` per level: max 5 calls total.
-fn get_tty_and_yolo_from_ancestors() -> (String, bool) {
+/// Walk the ancestor process chain once, collecting TTY and permission mode in a single pass.
+/// Returns `(tty, permission_mode)` where permission_mode is "yolo", "auto", or "normal".
+fn get_tty_and_permission_from_ancestors() -> (String, String) {
     let mut ppid = std::os::unix::process::parent_id() as i32;
     let mut found_tty = String::new();
-    let mut is_yolo = false;
+    let mut permission_mode = String::new();
 
     for _ in 0..5 {
         let Ok(out) = Command::new("ps")
             .args(["-o", "tty=,ppid=,args=", "-p", &ppid.to_string()])
+            .stderr(Stdio::null())
             .output()
         else {
             break;
@@ -361,11 +441,17 @@ fn get_tty_and_yolo_from_ancestors() -> (String, bool) {
             found_tty = format!("/dev/{}", tty_field);
         }
 
-        if !is_yolo && args_field.contains("--dangerously-skip-permissions") {
-            is_yolo = true;
+        if permission_mode.is_empty() {
+            if args_field.contains("--dangerously-skip-permissions") {
+                permission_mode = "yolo".to_string();
+            } else if args_field.contains("--permission-mode auto")
+                || args_field.contains("--permission-mode=auto")
+            {
+                permission_mode = "auto".to_string();
+            }
         }
 
-        if !found_tty.is_empty() && is_yolo {
+        if !found_tty.is_empty() && !permission_mode.is_empty() {
             break;
         }
 
@@ -375,7 +461,11 @@ fn get_tty_and_yolo_from_ancestors() -> (String, bool) {
         }
     }
 
-    (found_tty, is_yolo)
+    if permission_mode.is_empty() {
+        permission_mode = "normal".to_string();
+    }
+
+    (found_tty, permission_mode)
 }
 
 pub fn determine_status(
@@ -409,7 +499,7 @@ pub fn update_session(
     tty: &str,
     pane_id: Option<i32>,
     notification_type: Option<&str>,
-    is_yolo: bool,
+    permission_mode: &str,
     activity: Option<String>,
     is_dangerous: bool,
     git_branch: Option<String>,
@@ -506,7 +596,8 @@ pub fn update_session(
             status: new_status.clone(),
             created_at,
             updated_at: now.clone(),
-            is_yolo,
+            is_yolo: permission_mode == "yolo",
+            permission_mode: permission_mode.to_string(),
             last_activity,
             is_dangerous: final_dangerous,
             git_branch: final_branch,
@@ -515,6 +606,7 @@ pub fn update_session(
             tasks: final_tasks,
             subagents: existing.map(|s| s.subagents.clone()).unwrap_or_default(),
             pane_id: final_pane_id,
+            context_percent: existing.and_then(|s| s.context_percent),
         },
     );
 
@@ -544,6 +636,7 @@ mod tests {
             created_at: updated_at.to_string(),
             updated_at: updated_at.to_string(),
             is_yolo: false,
+            permission_mode: "normal".to_string(),
             last_activity: None,
             is_dangerous: false,
             git_branch: None,
@@ -552,6 +645,7 @@ mod tests {
             tasks: Vec::new(),
             subagents: Vec::new(),
             pane_id: None,
+            context_percent: None,
         }
     }
 
@@ -675,7 +769,7 @@ mod tests {
             "/dev/ttys001",
             None, // pane_id
             None,
-            false,
+            "normal",
             None,
             false,
             None,
@@ -711,7 +805,7 @@ mod tests {
             "/dev/ttys005",
             None, // pane_id
             None,
-            false,
+            "normal",
             None,
             false,
             None,
@@ -735,28 +829,28 @@ mod tests {
 
         let status = update_session(
             "UserPromptSubmit", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, None, false, None, false, None, None, &p,
+            None, None, "normal", None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "running");
 
         let status = update_session(
             "Stop", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, None, false, None, false, None, None, &p,
+            None, None, "normal", None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "stopped");
 
         let status = update_session(
             "PreToolUse", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, None, false, None, false, None, None, &p,
+            None, None, "normal", None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "stopped");
 
         let status = update_session(
             "UserPromptSubmit", "sess-1", "/tmp/proj", "/dev/ttys001",
-            None, None, false, None, false, None, None, &p,
+            None, None, "normal", None, false, None, None, &p,
             dir.path().to_str().unwrap(),
         ).unwrap();
         assert_eq!(status, "running");
@@ -776,7 +870,7 @@ mod tests {
             "",
             None, // pane_id
             None,
-            false,
+            "normal",
             None,
             false,
             None,

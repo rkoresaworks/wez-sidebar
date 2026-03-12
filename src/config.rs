@@ -1,9 +1,15 @@
 use serde::Deserialize;
-use std::{fs, path::PathBuf, process::Command};
+use std::{fs, path::PathBuf};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    /// Terminal backend: "wezterm" (default) or "tmux"
+    pub backend: String,
+    /// Path to terminal CLI binary (auto-detected if empty)
+    pub terminal_path: String,
+    /// Legacy field: maps to terminal_path for backward compat
+    #[serde(default)]
     pub wezterm_path: String,
     pub stale_threshold_mins: i64,
     pub data_dir: String,
@@ -29,24 +35,26 @@ impl Default for ReaperConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let wezterm_path = Command::new("which")
-            .arg("wezterm")
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| "wezterm".to_string());
-
         Self {
-            wezterm_path,
+            backend: "wezterm".to_string(),
+            terminal_path: String::new(),
+            wezterm_path: String::new(),
             stale_threshold_mins: 30,
             data_dir: "~/.config/wez-sidebar".to_string(),
             reaper: ReaperConfig::default(),
+        }
+    }
+}
+
+impl AppConfig {
+    /// Resolve the effective terminal_path (terminal_path > wezterm_path > auto-detect)
+    pub fn effective_terminal_path(&self) -> &str {
+        if !self.terminal_path.is_empty() {
+            &self.terminal_path
+        } else if !self.wezterm_path.is_empty() {
+            &self.wezterm_path
+        } else {
+            ""
         }
     }
 }

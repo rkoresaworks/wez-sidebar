@@ -22,7 +22,9 @@ pub struct Session {
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
-    pub is_yolo: bool,
+    pub is_yolo: bool, // Deprecated: kept for backward compat with old sessions.json
+    #[serde(default)]
+    pub permission_mode: String, // "normal", "yolo", "auto"
     #[serde(default)]
     pub last_activity: Option<String>,
     #[serde(default)]
@@ -39,6 +41,8 @@ pub struct Session {
     pub subagents: Vec<SubagentEntry>,
     #[serde(default)]
     pub pane_id: Option<i32>,
+    #[serde(default)]
+    pub context_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +71,7 @@ pub struct SessionItem {
     pub is_stale: bool,
     pub session_id: String,
     pub is_disconnected: bool,
-    pub is_yolo: bool,
+    pub permission_mode: String,
     pub last_activity: Option<String>,
     pub is_dangerous: bool,
     pub git_branch: Option<String>,
@@ -76,17 +80,7 @@ pub struct SessionItem {
     pub last_user_message_at: Option<DateTime<Utc>>,
     pub tasks: Vec<SessionTask>,
     pub active_subagents: usize,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct WezTermPane {
-    pub window_id: i32,
-    pub tab_id: i32,
-    pub pane_id: i32,
-    pub tty_name: String,
-    #[allow(dead_code)]
-    pub title: String,
-    pub is_active: bool,
+    pub context_percent: Option<u8>,
 }
 
 // ============================================================================

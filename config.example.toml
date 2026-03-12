@@ -2,10 +2,19 @@
 # Copy to ~/.config/wez-sidebar/config.toml and customize.
 # All values are optional; defaults are used when omitted.
 
-# WezTerm binary path (full path recommended).
+# --------------------------------------------------------------------------
+# Terminal Backend
+# --------------------------------------------------------------------------
+# "wezterm" (default) or "tmux"
+# backend = "wezterm"
+
+# Terminal CLI binary path (auto-detected if omitted).
 # When wez-sidebar is launched directly by WezTerm (without a shell),
 # `which wezterm` may fail due to limited PATH. Set the full path explicitly.
-wezterm_path = "/opt/homebrew/bin/wezterm"
+# terminal_path = "/opt/homebrew/bin/wezterm"
+
+# Legacy field (still works): equivalent to terminal_path for wezterm backend
+# wezterm_path = "/opt/homebrew/bin/wezterm"
 
 # Session stale threshold in minutes (default: 30)
 # stale_threshold_mins = 30
@@ -21,16 +30,16 @@ wezterm_path = "/opt/homebrew/bin/wezterm"
 #
 # Install: brew install terminal-notifier
 #
-# - Clicking the notification body -> focuses the WezTerm pane
+# - Clicking the notification body -> focuses the terminal pane
 # - If terminal-notifier is not installed, notifications are silently skipped.
 
 # --------------------------------------------------------------------------
 # Orphan Process Reaper
 # --------------------------------------------------------------------------
 # Automatically kills orphaned Claude Code processes that are no longer
-# attached to any WezTerm pane and have been running longer than the threshold.
+# attached to any terminal pane and have been running longer than the threshold.
 #
-# Safety: skipped when WezTerm is not running; uses SIGTERM only (no SIGKILL).
+# Safety: skipped when terminal is not running; uses SIGTERM only (no SIGKILL).
 # Manual use: wez-sidebar reap --dry (preview) / wez-sidebar reap (kill)
 #
 # [reaper]

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use chrono::{DateTime, Datelike, Local, Utc};
 use std::path::PathBuf;
 use std::{fs, process::Command, time::Duration};
 
@@ -161,5 +161,5 @@ fn format_reset_day(resets_at: &str) -> String {
     let weekday_num = reset_time.weekday().num_days_from_sunday() as usize;
     let weekday = weekdays[weekday_num];
 
-    format!("{}{}:{:02}", weekday, reset_time.hour(), reset_time.minute())
+    format!("{}/{}({})", reset_time.month(), reset_time.day(), weekday)
 }

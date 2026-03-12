@@ -165,7 +165,7 @@ fn handle_dock_key(app: &mut App, key: event::KeyEvent) {
             let visible = app.visible_sessions();
             if let Some(idx) = app.session_state.selected() {
                 if idx < visible.len() {
-                    activate_pane(visible[idx], &app.config.wezterm_path);
+                    activate_pane(visible[idx], app.backend.as_ref());
                 }
             }
         }
@@ -174,13 +174,13 @@ fn handle_dock_key(app: &mut App, key: event::KeyEvent) {
             if let Some(idx) = app.session_state.selected() {
                 if idx < visible.len() {
                     delete_session(visible[idx], &app.config.data_dir);
-                    app.sessions = load_sessions_data(&app.config);
+                    app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
                 }
             }
         }
         KeyCode::Char('f') => app.show_stale = !app.show_stale,
         KeyCode::Char('r') => {
-            app.sessions = load_sessions_data(&app.config);
+            app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
             app.usage = load_usage_from_cache(&app.config.data_dir);
         }
         _ => {}
@@ -199,7 +199,7 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(config);
-    app.sessions = load_sessions_data(&app.config);
+    app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
 
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
@@ -288,7 +288,7 @@ pub fn run_dock(config: AppConfig) -> Result<()> {
                 }
             }
             Ok(AppEvent::SessionsUpdated) => {
-                app.sessions = load_sessions_data(&app.config);
+                app.sessions = load_sessions_data(&app.config, app.backend.as_ref());
                 app.auto_jump_to_waiting();
             }
             Ok(AppEvent::UsageUpdated(usage)) => {
