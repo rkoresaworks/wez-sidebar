@@ -107,8 +107,19 @@ pub fn cache_usage_if_stale(data_dir: &str) {
     }
 
     let usage = load_usage_data();
+
     if usage.five_hour < 0 {
-        return; // API 失敗時はキャッシュを更新しない
+        // API 失敗時もキャッシュファイルを touch してクールダウンを効かせる
+        // (ファイル未存在 → 毎回リクエスト → レート制限悪循環を防止)
+        if let Some(parent) = cache_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(content) = fs::read_to_string(&cache_path) {
+            let _ = fs::write(&cache_path, content);
+        } else {
+            let _ = fs::write(&cache_path, "{}");
+        }
+        return;
     }
 
     if let Ok(json) = serde_json::to_string(&usage) {

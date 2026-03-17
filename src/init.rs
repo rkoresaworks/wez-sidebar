@@ -1,10 +1,12 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 use crate::config::expand_tilde;
 
 const CLAUDE_SETTINGS_PATH: &str = "~/.claude/settings.json";
+const CONFIG_TOML_PATH: &str = "~/.config/wez-sidebar/config.toml";
 
 const HOOK_EVENTS: &[&str] = &[
     "PreToolUse",
@@ -18,14 +20,99 @@ const HOOK_EVENTS: &[&str] = &[
 pub fn run_init() {
     println!("=== wez-sidebar setup ===\n");
 
+    setup_config();
+    println!();
     setup_hooks();
     println!();
     print_wezterm_guide();
 }
 
-/// Step 1: Hook registration
+/// Step 1: config.toml setup (terminal_path)
+fn setup_config() {
+    println!("⚙️  Step 1: Configuration\n");
+
+    let config_path = expand_tilde(CONFIG_TOML_PATH);
+
+    // Check if config.toml already has terminal_path
+    if let Ok(content) = fs::read_to_string(&config_path) {
+        if content.contains("terminal_path") {
+            println!("  ✅ config.toml already has terminal_path");
+            return;
+        }
+    }
+
+    // Auto-detect terminal binary
+    let detected = detect_terminal();
+    match &detected {
+        Some((name, path)) => {
+            println!("  Detected terminal: {} ({})", name, path);
+            print!("  Save to config.toml? [Y/n] ");
+        }
+        None => {
+            println!("  ⚠️  Could not auto-detect terminal (wezterm/tmux).");
+            print!("  Skip? [Y/n] ");
+        }
+    }
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    let input = input.trim().to_lowercase();
+
+    if input.is_empty() || input == "y" || input == "yes" {
+        if let Some((name, path)) = detected {
+            if write_config_toml(&config_path, &name, &path) {
+                println!("  ✅ Saved to {}", CONFIG_TOML_PATH);
+            } else {
+                println!("  ❌ Failed to write config.toml");
+            }
+        }
+    }
+}
+
+fn detect_terminal() -> Option<(String, String)> {
+    for name in &["wezterm", "tmux"] {
+        if let Ok(output) = Command::new("which")
+            .arg(name)
+            .stderr(Stdio::null())
+            .output()
+        {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Some((name.to_string(), path));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn write_config_toml(config_path: &PathBuf, backend: &str, terminal_path: &str) -> bool {
+    // Read existing or start fresh
+    let mut content = fs::read_to_string(config_path).unwrap_or_default();
+
+    if content.is_empty() {
+        content = format!("backend = \"{}\"\nterminal_path = \"{}\"\n", backend, terminal_path);
+    } else {
+        // Append if not already present
+        if !content.contains("terminal_path") {
+            content.push_str(&format!("\nterminal_path = \"{}\"\n", terminal_path));
+        }
+        if !content.contains("backend") {
+            content = format!("backend = \"{}\"\n{}", backend, content);
+        }
+    }
+
+    if let Some(parent) = config_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(config_path, content).is_ok()
+}
+
+/// Step 2: Hook registration
 fn setup_hooks() {
-    println!("📡 Step 1: Claude Code hooks\n");
+    println!("📡 Step 2: Claude Code hooks\n");
 
     let settings_path = expand_tilde(CLAUDE_SETTINGS_PATH);
 
@@ -138,9 +225,9 @@ fn print_manual_hooks() {
     println!("  ```");
 }
 
-/// Step 2: WezTerm configuration guide
+/// Step 3: WezTerm configuration guide
 fn print_wezterm_guide() {
-    println!("🖥️  Step 2: WezTerm keybinding\n");
+    println!("🖥️  Step 3: WezTerm keybinding\n");
     println!("  Add to your wezterm.lua — LEADER+t opens a mode picker:\n");
     println!("  ```lua");
     println!("  {{");
@@ -181,6 +268,12 @@ fn print_wezterm_guide() {
     println!("      }}, pane)");
     println!("    end),");
     println!("  }},");
+    println!("  ```\n");
+    println!("  For dock mode in gui-startup (bottom bar):\n");
+    println!("  ```lua");
+    println!("  -- NOTE: use send_text, not args (args causes SIGKILL on macOS)");
+    println!("  local dock = pane:split({{ direction = \"Bottom\", size = 0.25 }})");
+    println!("  dock:send_text(\"sleep 1 && ~/.local/bin/wez-sidebar dock\\n\")");
     println!("  ```\n");
     println!("✨ Setup complete! Press LEADER+t to open/close wez-sidebar.");
 }
