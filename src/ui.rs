@@ -384,6 +384,32 @@ pub fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Check if Anthropic 2x usage campaign is active
+/// Campaign: outside US Pacific weekday 5AM-11AM, until 2026-03-27
+fn is_double_usage_active() -> bool {
+    use chrono::{Datelike, FixedOffset, Local, NaiveDate, Timelike, Weekday};
+
+    let now = Local::now();
+
+    // Campaign ends 2026-03-27
+    let end_date = NaiveDate::from_ymd_opt(2026, 3, 27).unwrap();
+    if now.date_naive() > end_date {
+        return false;
+    }
+
+    // Convert to US Pacific (UTC-7 PDT)
+    let pacific = FixedOffset::west_opt(7 * 3600).unwrap();
+    let pacific_now = now.with_timezone(&pacific);
+    let hour = pacific_now.hour();
+    let weekday = pacific_now.weekday();
+
+    // Peak = weekday 5AM-11AM Pacific → NOT double
+    let is_weekday = !matches!(weekday, Weekday::Sat | Weekday::Sun);
+    let is_peak = is_weekday && (5..11).contains(&hour);
+
+    !is_peak
+}
+
 /// Format usage as compact spans for status bar
 pub fn format_usage_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
@@ -417,6 +443,11 @@ pub fn format_usage_spans(app: &App) -> Vec<Span<'static>> {
             text.push_str(&format!("(~{})", app.usage.weekly_reset));
         }
         spans.push(Span::styled(text, Style::default().fg(color)));
+        spans.push(Span::raw(" "));
+    }
+
+    if is_double_usage_active() {
+        spans.push(Span::styled("2倍中🔥", Style::default().fg(Color::Rgb(255, 140, 0))));
         spans.push(Span::raw(" "));
     }
 

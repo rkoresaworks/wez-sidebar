@@ -84,34 +84,8 @@ pub struct SessionItem {
 }
 
 // ============================================================================
-// Usage API
+// Usage (cache read only — data written by statusline script)
 // ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UsageResponse {
-    pub five_hour: UsageData,
-    pub seven_day: UsageData,
-    pub seven_day_sonnet: Option<UsageData>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UsageData {
-    pub utilization: f64,
-    #[serde(default)]
-    pub resets_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KeychainCreds {
-    #[serde(rename = "claudeAiOauth")]
-    pub claude_ai_oauth: OAuthData,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthData {
-    #[serde(rename = "accessToken")]
-    pub access_token: String,
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageLimits {

@@ -9,7 +9,6 @@ use crate::config::AppConfig;
 use crate::session::{read_session_store, send_permission_notification, write_session_store};
 use crate::terminal::create_backend;
 use crate::types::{HookPayload, Session, SessionTask};
-use crate::usage::cache_usage_if_stale;
 
 pub fn handle_hook(event_name: &str, config: &AppConfig) -> Result<()> {
     let mut input = String::new();
@@ -109,9 +108,6 @@ fn handle_hook_inner(event_name: &str, config: &AppConfig, input: &str) -> Resul
             let _ = write_session_store(&store, &config.data_dir);
         }
     }
-
-    // Usage cache: 10分クールダウンで API 取得 → キャッシュファイル書き出し
-    cache_usage_if_stale(&config.data_dir);
 
     Ok(())
 }
