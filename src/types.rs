@@ -94,6 +94,9 @@ pub struct UsageLimits {
     pub weekly: i32,
     pub weekly_reset: String,
     pub sonnet: i32,
+    /// cache file の mtime からの経過秒数 (TUI表示用、シリアライズしない)
+    #[serde(skip)]
+    pub cache_age_secs: Option<u64>,
 }
 
 // ============================================================================

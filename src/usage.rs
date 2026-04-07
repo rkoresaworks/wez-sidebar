@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use crate::config::expand_tilde;
 use crate::types::UsageLimits;
@@ -14,8 +15,14 @@ fn get_cache_path(data_dir: &str) -> PathBuf {
 /// (データは Claude Code の statusline スクリプトが書き出す)
 pub fn load_usage_from_cache(data_dir: &str) -> UsageLimits {
     let cache_path = get_cache_path(data_dir);
-    match fs::read_to_string(&cache_path) {
+    let mut usage: UsageLimits = match fs::read_to_string(&cache_path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-        Err(_) => UsageLimits::default(),
-    }
+        Err(_) => return UsageLimits::default(),
+    };
+    usage.cache_age_secs = fs::metadata(&cache_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| SystemTime::now().duration_since(t).ok())
+        .map(|d| d.as_secs());
+    usage
 }

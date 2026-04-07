@@ -410,18 +410,45 @@ fn is_double_usage_active() -> bool {
     !is_peak
 }
 
+/// 30分以上経過した cache は古いとみなしグレー表示する
+const STALE_USAGE_AGE_SECS: u64 = 30 * 60;
+
+/// 経過秒数を "今" / "5分前" / "2時間前" / "3日前" のような短い相対時間表現にする
+fn format_age(secs: u64) -> String {
+    if secs < 60 {
+        "今".to_string()
+    } else if secs < 3600 {
+        format!("{}分前", secs / 60)
+    } else if secs < 86400 {
+        format!("{}時間前", secs / 3600)
+    } else {
+        format!("{}日前", secs / 86400)
+    }
+}
+
 /// Format usage as compact spans for status bar
 pub fn format_usage_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    let stale = app
+        .usage
+        .cache_age_secs
+        .map(|s| s >= STALE_USAGE_AGE_SECS)
+        .unwrap_or(false);
 
-    if app.usage.five_hour >= 0 {
-        let color = if app.usage.five_hour >= 80 {
+    let pick_color = |percent: i32| -> Color {
+        if stale {
+            Color::DarkGray
+        } else if percent >= 80 {
             Color::Red
-        } else if app.usage.five_hour >= 50 {
+        } else if percent >= 50 {
             Color::Yellow
         } else {
             Color::Green
-        };
+        }
+    };
+
+    if app.usage.five_hour >= 0 {
+        let color = pick_color(app.usage.five_hour);
         let mut text = format!("⏳{}%", app.usage.five_hour);
         if !app.usage.five_hour_reset.is_empty() {
             text.push_str(&format!("({})", app.usage.five_hour_reset));
@@ -431,18 +458,20 @@ pub fn format_usage_spans(app: &App) -> Vec<Span<'static>> {
     }
 
     if app.usage.weekly >= 0 {
-        let color = if app.usage.weekly >= 80 {
-            Color::Red
-        } else if app.usage.weekly >= 50 {
-            Color::Yellow
-        } else {
-            Color::Green
-        };
+        let color = pick_color(app.usage.weekly);
         let mut text = format!("📅{}%", app.usage.weekly);
         if !app.usage.weekly_reset.is_empty() {
             text.push_str(&format!("(~{})", app.usage.weekly_reset));
         }
         spans.push(Span::styled(text, Style::default().fg(color)));
+        spans.push(Span::raw(" "));
+    }
+
+    if let Some(secs) = app.usage.cache_age_secs {
+        spans.push(Span::styled(
+            format!("[{}]", format_age(secs)),
+            Style::default().fg(Color::DarkGray),
+        ));
         spans.push(Span::raw(" "));
     }
 
