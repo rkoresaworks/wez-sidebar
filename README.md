@@ -26,6 +26,7 @@ This is an intentional scope decision: wez-sidebar is for WezTerm users who run 
 - **Desktop notifications** — macOS notification on permission prompts (via `terminal-notifier`)
 - **Orphan reaper** — Automatically detects and kills orphaned Claude Code processes not attached to any WezTerm pane (opt-in)
 - **Zero polling** — All data flows through hooks → file watcher; no CPU wasted on polling
+- **Spawn new sessions** — `wez-sidebar new <dir>` opens a new tab with Claude Code running in the given directory
 
 ## Requirements
 
@@ -131,6 +132,29 @@ Add to `~/.claude/settings.json`:
 </details>
 
 That's it. No config file needed.
+
+## Spawning New Sessions
+
+`wez-sidebar new` opens a new WezTerm tab (or window) and starts `claude` in the given directory. Works with both WezTerm and tmux backends.
+
+```bash
+# Open a new tab in the current directory with claude
+wez-sidebar new
+
+# Open a new tab in the specified directory
+wez-sidebar new ~/Documents/personal-dev/wez-sidebar
+
+# Open in a new window instead of a tab
+wez-sidebar new -w ~/Documents/personal-dev/wez-sidebar
+
+# Pass an initial prompt to claude (everything after `--` is forwarded)
+wez-sidebar new ~/path/to/repo -- "Fix X in src/foo.rs"
+
+# Pass claude options through
+wez-sidebar new ~/path -- -r
+```
+
+The tab title is automatically set to the directory basename.
 
 ## Card Display
 

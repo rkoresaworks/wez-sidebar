@@ -22,6 +22,13 @@ fn detect_binary_path(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// Quote an argument for safe inclusion in a shell command line.
+/// Wraps the argument in single quotes and escapes any embedded single quotes.
+fn shell_quote_single(s: &str) -> String {
+    let escaped = s.replace('\'', "'\\''");
+    format!("'{}'", escaped)
+}
+
 /// Remove trailing empty lines from a line buffer
 fn trim_trailing_empty_lines(lines: Vec<String>) -> Vec<String> {
     if lines.is_empty() {
@@ -71,6 +78,16 @@ pub trait TerminalBackend {
 
     /// Build a shell command that activates + sends Enter key (for auto-approve)
     fn build_approve_command(&self, tab_id: i32, pane_id: i32) -> String;
+
+    /// Spawn a new tab (or window) running `prog` in `cwd`.
+    /// Returns the new pane_id on success, or None on failure.
+    ///
+    /// `new_window` selects a new OS window instead of a new tab where the
+    /// backend supports the distinction (tmux treats both as new-window).
+    fn spawn_pane(&self, cwd: &str, prog: &[&str], new_window: bool) -> Option<i32>;
+
+    /// Set the title of the tab containing the given pane. No-op on failure.
+    fn set_tab_title(&self, pane_id: i32, title: &str);
 
     /// Name of the terminal (for diagnostics and logging)
     fn name(&self) -> &str;
@@ -199,6 +216,43 @@ impl TerminalBackend for WezTermBackend {
         )
     }
 
+    fn spawn_pane(&self, cwd: &str, prog: &[&str], new_window: bool) -> Option<i32> {
+        let mut args: Vec<&str> = vec!["cli", "spawn", "--cwd", cwd];
+        if new_window {
+            args.push("--new-window");
+        }
+        args.push("--");
+        args.extend_from_slice(prog);
+
+        let output = Command::new(&self.path)
+            .args(&args)
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<i32>()
+            .ok()
+    }
+
+    fn set_tab_title(&self, pane_id: i32, title: &str) {
+        let _ = Command::new(&self.path)
+            .args([
+                "cli",
+                "set-tab-title",
+                "--pane-id",
+                &pane_id.to_string(),
+                title,
+            ])
+            .stderr(Stdio::null())
+            .output();
+    }
+
     fn name(&self) -> &str {
         "wezterm"
     }
@@ -319,6 +373,47 @@ impl TerminalBackend for TmuxBackend {
             "{} select-pane -t %{} && {} send-keys -t %{} Enter",
             self.path, pane_id, self.path, pane_id
         )
+    }
+
+    fn spawn_pane(&self, cwd: &str, prog: &[&str], _new_window: bool) -> Option<i32> {
+        // tmux has no native "new OS window" concept; both tab and window map to
+        // new-window. The initial pane of the new window becomes the spawn target.
+        let cmd_str = prog
+            .iter()
+            .map(|s| shell_quote_single(s))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let output = Command::new(&self.path)
+            .args([
+                "new-window",
+                "-c",
+                cwd,
+                "-P",
+                "-F",
+                "#{pane_id}",
+                &cmd_str,
+            ])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        // Output is "%5" — strip the '%' prefix
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .strip_prefix('%')
+            .and_then(|s| s.parse::<i32>().ok())
+    }
+
+    fn set_tab_title(&self, pane_id: i32, title: &str) {
+        let _ = Command::new(&self.path)
+            .args(["rename-window", "-t", &format!("%{}", pane_id), title])
+            .stderr(Stdio::null())
+            .output();
     }
 
     fn name(&self) -> &str {

@@ -48,6 +48,17 @@ enum Commands {
         #[arg(long)]
         dry: bool,
     },
+    /// Spawn a new Claude Code session in a new terminal tab (or window)
+    New {
+        /// Working directory for the new session (default: current directory)
+        dir: Option<String>,
+        /// Open in a new window instead of a new tab
+        #[arg(short = 'w', long)]
+        window: bool,
+        /// Extra arguments passed through to `claude` (use `--` to separate)
+        #[arg(last = true)]
+        claude_args: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -99,10 +110,57 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Some(Commands::New { dir, window, claude_args }) => {
+            spawn_new_session(&config, dir, window, claude_args)?;
+        }
         None => {
             run_tui(config)?;
         }
     }
 
+    Ok(())
+}
+
+/// Spawn a new Claude Code session in a new terminal tab (or window).
+/// Resolves `dir` to an absolute path, spawns `claude` via the active terminal
+/// backend, then sets the tab title to the directory's basename.
+fn spawn_new_session(
+    config: &crate::config::AppConfig,
+    dir: Option<String>,
+    window: bool,
+    claude_args: Vec<String>,
+) -> Result<()> {
+    let cwd = match dir {
+        Some(d) => {
+            let p = std::path::PathBuf::from(&d);
+            std::fs::canonicalize(&p)
+                .map_err(|e| anyhow::anyhow!("invalid dir '{}': {}", d, e))?
+        }
+        None => std::env::current_dir()?,
+    };
+
+    if !cwd.is_dir() {
+        anyhow::bail!("not a directory: {}", cwd.display());
+    }
+
+    let backend = create_backend(&config.backend, config.effective_terminal_path());
+
+    let mut prog: Vec<String> = vec!["claude".to_string()];
+    prog.extend(claude_args);
+    let prog_refs: Vec<&str> = prog.iter().map(String::as_str).collect();
+
+    let cwd_str = cwd.to_string_lossy();
+
+    let pane_id = backend
+        .spawn_pane(&cwd_str, &prog_refs, window)
+        .ok_or_else(|| anyhow::anyhow!("failed to spawn new {} session", backend.name()))?;
+
+    let title = cwd
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "claude".to_string());
+    backend.set_tab_title(pane_id, &title);
+
+    println!("spawned pane {} in {}", pane_id, cwd.display());
     Ok(())
 }
