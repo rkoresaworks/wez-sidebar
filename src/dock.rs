@@ -304,12 +304,20 @@ fn handle_dock_key(app: &mut App, key: event::KeyEvent) {
                 app.previous_session();
             }
         }
-        KeyCode::Right | KeyCode::Char('l') => {
+        KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
             app.mark_manual_select();
             if in_kanban {
                 jump_next_column(app);
             } else {
                 app.next_session();
+            }
+        }
+        KeyCode::BackTab => {
+            app.mark_manual_select();
+            if in_kanban {
+                jump_prev_column(app);
+            } else {
+                app.previous_session();
             }
         }
         KeyCode::Enter => {

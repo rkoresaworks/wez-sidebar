@@ -226,6 +226,23 @@ When a task sits in `review` for more than `block_alert_minutes` (default 5), a 
 
 Tasks live in `~/.config/wez-sidebar/tasks.json`. The task title equals the Claude Code session name (`claude -n "<title>"`), so renames via `/rename` stay tracked.
 
+### Claude Code skill (`spawn-session`)
+
+Ships with the repo as a Claude Code user skill that fires on natural-language cues like "spawn a side session for X" / "別セッションで〜" / "worktree を切って〜".
+
+```bash
+# Install (symlinks into ~/.claude/skills/)
+./scripts/install-skills.sh
+
+# Dry-run
+./scripts/install-skills.sh --dry
+
+# Remove
+./scripts/install-skills.sh --uninstall
+```
+
+After installing and restarting Claude Code, phrasing like "spawn a side agent to investigate X", "in parallel, write tests for Y", or "try Z on a worktree" triggers the skill, which internally calls `wez-sidebar new --task "..." --prompt "..."` and registers the task in the kanban's Active column.
+
 ## Card Display
 
 ### Sidebar (compact, 3 content lines)

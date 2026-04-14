@@ -226,6 +226,23 @@ wez-sidebar tasks resume <id>
 
 タスクは `~/.config/wez-sidebar/tasks.json` に永続化される。Claude Code の session name (`claude -n "<title>"`) と一致しているので、`/rename` でセッション名を変えてもそのまま追跡できる。
 
+### Claude Code skill (`spawn-session`)
+
+会話中に自然言語で別セッションを spawn できる user skill。リポジトリ同梱。
+
+```bash
+# インストール (~/.claude/skills/ に symlink を張る)
+./scripts/install-skills.sh
+
+# 確認だけ
+./scripts/install-skills.sh --dry
+
+# 外す
+./scripts/install-skills.sh --uninstall
+```
+
+インストール後 Claude Code を再起動すると、**「別セッションで chronicle のバグ追って」「並行で UI テスト書いて」「worktree 切って試して」** のような発話で skill が発動し、内部で `wez-sidebar new --task "..." --prompt "..."` が実行されてカンバンの Active カラムにタスクが現れる。
+
 ## カード表示
 
 ### サイドバー（コンパクト、コンテンツ 3 行）
