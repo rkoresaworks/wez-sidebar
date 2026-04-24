@@ -181,20 +181,39 @@ fn render_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Sidebar の session カード高さを動的に決める。
+/// border(2) + core content(3) + active tasks(最大3行)
+fn card_height_for(sess: &SessionItem) -> u16 {
+    let active_tasks = sess
+        .tasks
+        .iter()
+        .filter(|t| t.status != "completed" && t.status != "deleted")
+        .count();
+    5 + (active_tasks.min(3) as u16)
+}
+
 fn render_sessions_flat(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible = app.visible_sessions();
     let selected = app.session_state.selected().unwrap_or(0);
     let total = visible.len();
 
-    let card_height = 5u16; // 2 border + 3 content (compact for sidebar)
     let cards_area_height = area.height.saturating_sub(1);
-    let max_cards = if cards_area_height >= card_height {
-        (cards_area_height / card_height) as usize
-    } else {
-        0
-    };
+    let heights: Vec<u16> = visible.iter().map(|s| card_height_for(s)).collect();
 
-    let scroll_hint = if total > max_cards { " ↕" } else { "" };
+    // 可視件数を概算 (scroll hint 用)
+    let approx_visible = {
+        let mut used = 0u16;
+        let mut n = 0;
+        for h in &heights {
+            if used + h > cards_area_height {
+                break;
+            }
+            used += h;
+            n += 1;
+        }
+        n
+    };
+    let scroll_hint = if total > approx_visible { " ↕" } else { "" };
     let title = if app.show_stale {
         format!(" 🖥 Sessions [All] ({}){} ", total, scroll_hint)
     } else {
@@ -222,29 +241,44 @@ fn render_sessions_flat(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    if max_cards == 0 {
+    if cards_area_height == 0 {
         return;
     }
 
-    let scroll_offset = if selected >= max_cards {
-        selected - max_cards + 1
-    } else {
-        0
+    // selected が画面内に収まる最小の scroll_offset を求める
+    let scroll_offset = {
+        let mut off = 0usize;
+        loop {
+            let mut used = 0u16;
+            let mut selected_fits = false;
+            for i in off..visible.len() {
+                let h = heights[i];
+                if used + h > cards_area_height {
+                    break;
+                }
+                used += h;
+                if i == selected {
+                    selected_fits = true;
+                }
+            }
+            if selected_fits || off >= selected {
+                break off;
+            }
+            off += 1;
+        }
     };
 
-    for (vi, i) in (scroll_offset..).take(max_cards).enumerate() {
-        if i >= visible.len() {
+    let mut y = cards_area.y;
+    for i in scroll_offset..visible.len() {
+        let h = heights[i];
+        if y + h > cards_area.y + cards_area.height {
             break;
         }
         let sess = visible[i];
         let is_selected = i == selected;
-
-        let y = cards_area.y + (vi as u16 * card_height);
-        if y + card_height > cards_area.y + cards_area.height {
-            break;
-        }
-        let card_area = Rect::new(cards_area.x, y, cards_area.width, card_height);
+        let card_area = Rect::new(cards_area.x, y, cards_area.width, h);
         render_session_card(frame, sess, is_selected, app.tick, card_area);
+        y += h;
     }
 }
 
