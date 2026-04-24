@@ -38,35 +38,140 @@ use crate::usage::load_usage_from_cache;
 // ============================================================================
 
 fn ui(frame: &mut Frame, app: &mut App) {
+    let usage_height = usage_block_height(app);
+
     if app.show_preview {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(5),    // Sessions
-                Constraint::Length(12), // Preview
-                Constraint::Length(1),  // Status bar
+                Constraint::Length(usage_height), // Usage block
+                Constraint::Min(5),               // Sessions
+                Constraint::Length(12),           // Preview
+                Constraint::Length(1),            // Status bar (help only)
             ])
             .split(frame.area());
 
-        render_sessions(frame, app, chunks[0]);
-        render_preview(frame, app, chunks[1]);
-        render_status_bar(frame, app, chunks[2]);
+        render_usage_block(frame, app, chunks[0]);
+        render_sessions(frame, app, chunks[1]);
+        render_preview(frame, app, chunks[2]);
+        render_help_bar(frame, chunks[3]);
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(10),   // Sessions
-                Constraint::Length(1), // Status bar
+                Constraint::Length(usage_height), // Usage block
+                Constraint::Min(10),              // Sessions
+                Constraint::Length(1),            // Status bar (help only)
             ])
             .split(frame.area());
 
-        render_sessions(frame, app, chunks[0]);
-        render_status_bar(frame, app, chunks[1]);
+        render_usage_block(frame, app, chunks[0]);
+        render_sessions(frame, app, chunks[1]);
+        render_help_bar(frame, chunks[2]);
     }
 
     if app.show_help {
         render_help_popup(frame);
     }
+}
+
+/// Usage ブロック高さ: borders(2) + (5h あれば) + (weekly あれば) + (2x あれば)
+fn usage_block_height(app: &App) -> u16 {
+    let mut h = 2; // top + bottom border
+    if app.usage.five_hour >= 0 {
+        h += 1;
+    }
+    if app.usage.weekly >= 0 {
+        h += 1;
+    }
+    if is_double_usage_active() {
+        h += 1;
+    }
+    if h == 2 {
+        // 中身が空なら枠自体を非表示にするため 0 を返す
+        return 0;
+    }
+    h
+}
+
+/// Usage ブロック: 枠付き。Claude Code statusline 相当の braille bar + reset 時刻
+/// ┌ 📊 Usage ─┐
+/// │ 5h ⣦  8% (4h44m) │
+/// │ 7d ⣀  1% (~金 12:00) │
+/// └────────────┘
+fn render_usage_block(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+
+    let stale = app
+        .usage
+        .cache_age_secs
+        .map(|s| s >= STALE_USAGE_AGE_SECS)
+        .unwrap_or(false);
+
+    let bar_color = |pct: i32| -> Color {
+        if stale {
+            Color::DarkGray
+        } else {
+            gradient_color(pct)
+        }
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    let bar_line = |label: &'static str, pct: i32, reset: &str, prefix: &str| -> Line<'static> {
+        let mut spans = vec![
+            Span::styled(label, Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(braille_bar(pct, 8), Style::default().fg(bar_color(pct))),
+            Span::raw(format!(" {}%", pct)),
+        ];
+        if !reset.is_empty() {
+            spans.push(Span::styled(
+                format!(" ({}{})", prefix, reset),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Line::from(spans)
+    };
+
+    if app.usage.five_hour >= 0 {
+        lines.push(bar_line(
+            "5h",
+            app.usage.five_hour,
+            &app.usage.five_hour_reset,
+            "",
+        ));
+    }
+    if app.usage.weekly >= 0 {
+        lines.push(bar_line("7d", app.usage.weekly, &app.usage.weekly_reset, "~"));
+    }
+    if is_double_usage_active() {
+        lines.push(Line::from(Span::styled(
+            "2倍中🔥",
+            Style::default().fg(Color::Rgb(255, 140, 0)),
+        )));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(
+            " 📊 Usage ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+/// Status bar (1行): help hint のみ。Usage は上部 block へ移動済み。
+fn render_help_bar(frame: &mut Frame, area: Rect) {
+    let text = Line::from(Span::styled(
+        " ?:help q:quit",
+        Style::default().fg(Color::DarkGray),
+    ));
+    frame.render_widget(Paragraph::new(text), area);
 }
 
 fn render_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -618,7 +723,43 @@ fn format_age(secs: u64) -> String {
     }
 }
 
-/// Format usage as compact spans for status bar
+/// Braille progress bar: ' ⣀⣄⣤⣦⣶⣷⣿' (index 0..=7)
+const BRAILLE: [char; 8] = [' ', '⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿'];
+
+fn braille_bar(pct: i32, width: usize) -> String {
+    let pct = pct.clamp(0, 100);
+    let level = pct as f64 / 100.0;
+    let mut bar = String::new();
+    for i in 0..width {
+        let seg_start = i as f64 / width as f64;
+        let seg_end = (i + 1) as f64 / width as f64;
+        if level >= seg_end {
+            bar.push(BRAILLE[7]);
+        } else if level <= seg_start {
+            bar.push(BRAILLE[0]);
+        } else {
+            let frac = (level - seg_start) / (seg_end - seg_start);
+            let idx = ((frac * 7.0) as usize).min(7);
+            bar.push(BRAILLE[idx]);
+        }
+    }
+    bar
+}
+
+/// Claude Code statusline と同じ gradient: 0% 緑 → 50% 黄 → 100% 赤
+fn gradient_color(pct: i32) -> Color {
+    let pct = pct.clamp(0, 100);
+    if pct < 50 {
+        let r = (pct as f64 * 5.1) as u8;
+        Color::Rgb(r, 200, 80)
+    } else {
+        let g = ((200.0 - (pct - 50) as f64 * 4.0).max(0.0)) as u8;
+        Color::Rgb(255, g, 60)
+    }
+}
+
+/// Format usage as compact spans for status bar.
+/// Format: `5h ⣦ 8% │ 7d ⣄ 1%` (Claude Code statusline と同形式)
 pub fn format_usage_spans(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let stale = app
@@ -627,49 +768,57 @@ pub fn format_usage_spans(app: &App) -> Vec<Span<'static>> {
         .map(|s| s >= STALE_USAGE_AGE_SECS)
         .unwrap_or(false);
 
-    let pick_color = |percent: i32| -> Color {
+    let bar_color = |pct: i32| -> Color {
         if stale {
             Color::DarkGray
-        } else if percent >= 80 {
-            Color::Red
-        } else if percent >= 50 {
-            Color::Yellow
         } else {
-            Color::Green
+            gradient_color(pct)
         }
     };
 
+    let mut pushed = false;
+
     if app.usage.five_hour >= 0 {
-        let color = pick_color(app.usage.five_hour);
-        let mut text = format!("⏳{}%", app.usage.five_hour);
-        if !app.usage.five_hour_reset.is_empty() {
-            text.push_str(&format!("({})", app.usage.five_hour_reset));
-        }
-        spans.push(Span::styled(text, Style::default().fg(color)));
+        spans.push(Span::styled("5h", Style::default().fg(Color::DarkGray)));
         spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            braille_bar(app.usage.five_hour, 8),
+            Style::default().fg(bar_color(app.usage.five_hour)),
+        ));
+        spans.push(Span::raw(format!(" {}%", app.usage.five_hour)));
+        pushed = true;
     }
 
     if app.usage.weekly >= 0 {
-        let color = pick_color(app.usage.weekly);
-        let mut text = format!("📅{}%", app.usage.weekly);
-        if !app.usage.weekly_reset.is_empty() {
-            text.push_str(&format!("(~{})", app.usage.weekly_reset));
+        if pushed {
+            spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
         }
-        spans.push(Span::styled(text, Style::default().fg(color)));
+        spans.push(Span::styled("7d", Style::default().fg(Color::DarkGray)));
         spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            braille_bar(app.usage.weekly, 8),
+            Style::default().fg(bar_color(app.usage.weekly)),
+        ));
+        spans.push(Span::raw(format!(" {}%", app.usage.weekly)));
+        pushed = true;
     }
 
     if let Some(secs) = app.usage.cache_age_secs {
+        if pushed {
+            spans.push(Span::raw(" "));
+        }
         spans.push(Span::styled(
             format!("[{}]", format_age(secs)),
             Style::default().fg(Color::DarkGray),
         ));
-        spans.push(Span::raw(" "));
     }
 
     if is_double_usage_active() {
-        spans.push(Span::styled("2倍中🔥", Style::default().fg(Color::Rgb(255, 140, 0))));
         spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            "2倍中🔥",
+            Style::default().fg(Color::Rgb(255, 140, 0)),
+        ));
     }
 
     spans
